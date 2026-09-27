@@ -1,0 +1,268 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Smooth, quick page entry transition */
+@keyframes pageEnter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Micro-pop for badges, switches, icons, and steppers */
+@keyframes microPop {
+  0% {
+    transform: scale(0.92);
+  }
+  60% {
+    transform: scale(1.06);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* Mobile bottom-sheet slide-up */
+@keyframes sheetSlideUp {
+  0% {
+    transform: translateY(100%);
+    opacity: 0.5;
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* Subtle, gentle dropdown fade */
+@keyframes dropdownFade {
+  0% {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Alert dialog shake */
+@keyframes shakeAlert {
+  0%, 100% {
+    transform: translateX(0);
+  }
+  20%, 60% {
+    transform: translateX(-5px);
+  }
+  40%, 80% {
+    transform: translateX(5px);
+  }
+}
+
+/* Toast drop-down bounce */
+@keyframes toastSlide {
+  0% {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.96);
+  }
+  70% {
+    opacity: 1;
+    transform: translateY(2px) scale(1.01);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Modal backdrop fade */
+@keyframes fadeInBackdrop {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.page-transition {
+  animation: pageEnter 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-pop {
+  animation: microPop 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-sheet-up {
+  animation: sheetSlideUp 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-dropdown {
+  animation: dropdownFade 0.18s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-shake {
+  animation: shakeAlert 0.32s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}
+
+.animate-toast {
+  animation: toastSlide 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-fade-backdrop {
+  animation: fadeInBackdrop 0.2s ease-out forwards;
+}
+
+/* Gentle text fade without any movement or scale jumps */
+@keyframes textFade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-fade {
+  animation: textFade 0.22s ease-in-out forwards;
+}
+
+/* ============================================================== */
+/* CINEMATIC CURTAIN ANIMATIONS (ORIGINAL TIMINGS + GPU FIX)      */
+/* ============================================================== */
+
+@keyframes curtainExpandDown {
+  0% {
+    transform: translateY(-75%) translateZ(0);
+    opacity: 0.85;
+  }
+  100% {
+    transform: translateY(0) translateZ(0);
+    opacity: 1;
+  }
+}
+
+.animate-curtain-down {
+  height: 100vh;
+  animation: curtainExpandDown 0.75s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  will-change: transform;
+}
+
+@keyframes logoWheelTwoSpins {
+  0% {
+    transform: rotate(0deg) translateZ(0);
+  }
+  100% {
+    transform: rotate(720deg) translateZ(0);
+  }
+}
+
+.animate-logo-spin {
+  animation: logoWheelTwoSpins 2.2s cubic-bezier(0.45, 0.05, 0.55, 0.95) forwards;
+  will-change: transform;
+}
+
+@keyframes curtainSlideUp {
+  0% {
+    transform: translateY(0) translateZ(0);
+  }
+  100% {
+    transform: translateY(-100%) translateZ(0);
+  }
+}
+
+.animate-curtain-up {
+  height: 100vh;
+  animation: curtainSlideUp 0.85s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  will-change: transform;
+}
+
+/* ============================================================== */
+/* HEADER FADE-DOWN SETTINGS                                      */
+/* ============================================================== */
+
+@keyframes headerContentFadeDown {
+  0% {
+    opacity: 0;
+    transform: translateY(-24px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-header-left {
+  animation: headerContentFadeDown 0.55s cubic-bezier(0.16, 1, 0.3, 1) 0.72s both;
+}
+
+.animate-header-right {
+  animation: headerContentFadeDown 0.55s cubic-bezier(0.16, 1, 0.3, 1) 0.82s both;
+}
+
+/* ============================================================== */
+/* DASHBOARD WATERFALL CASCADE                                    */
+/* ============================================================== */
+
+@keyframes waterfallCard {
+  0% {
+    opacity: 0;
+    transform: translateY(22px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-cascade-1 {
+  animation: waterfallCard 0.55s cubic-bezier(0.16, 1, 0.3, 1) 0.05s both;
+}
+
+.animate-cascade-2 {
+  animation: waterfallCard 0.55s cubic-bezier(0.16, 1, 0.3, 1) 0.16s both;
+}
+
+.animate-cascade-3 {
+  animation: waterfallCard 0.55s cubic-bezier(0.16, 1, 0.3, 1) 0.28s both;
+}
+
+.animate-cascade-4 {
+  animation: waterfallCard 0.55s cubic-bezier(0.16, 1, 0.3, 1) 0.40s both;
+}
+
+.animate-cascade-5 {
+  animation: waterfallCard 0.55s cubic-bezier(0.16, 1, 0.3, 1) 0.52s both;
+}
+
+/* ============================================================== */
+/* GLOBAL ANIMATION KILL-SWITCH (FAST SHIFT MODE - OPTIMIZED)     */
+/* ============================================================== */
+body.disable-animations {
+  --tw-translate-x: 0 !important;
+  --tw-translate-y: 0 !important;
+}
+
+body.disable-animations .animate-cascade-1,
+body.disable-animations .animate-cascade-2,
+body.disable-animations .animate-cascade-3,
+body.disable-animations .animate-cascade-4,
+body.disable-animations .animate-cascade-5,
+body.disable-animations .animate-toast,
+body.disable-animations .animate-curtain-down,
+body.disable-animations .animate-curtain-up,
+body.disable-animations .animate-logo-spin,
+body.disable-animations .animate-header-left,
+body.disable-animations .animate-header-right {
+  animation: none !important;
+  transform: none !important;
+}
+
+body.disable-animations .page-transition {
+  animation: none !important;
+}
