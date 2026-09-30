@@ -40,7 +40,7 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
   const [hasStudentsVal, setHasStudentsVal] = useState(false);
   const [notesVal, setNotesVal] = useState('');
 
-  // Fixed: removed "rooms" dependency so edits won't reset floor to Floor 2
+  // Keeps floor selection intact across updates
   useEffect(() => {
     if (location.state?.targetFloor) {
       setSelectedFloor(Number(location.state.targetFloor));
@@ -173,12 +173,15 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
   return (
     <div className="p-4 space-y-3.5 pb-28 text-slate-800">
       
-      {/* Toast Notification */}
-      {toastMessage && (
-        <div className="p-3 bg-emerald-50 border border-emerald-300 text-emerald-800 text-xs font-semibold rounded-2xl flex items-center gap-2 animate-pop shadow-sm">
-          <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
-          <span>{toastMessage}</span>
-        </div>
+      {/* Floating Notification (Directly below header, zero layout shift) */}
+      {toastMessage && createPortal(
+        <div className="fixed top-20 inset-x-0 z-[150] max-w-md mx-auto px-4 pointer-events-none animate-toast">
+          <div className="pointer-events-auto p-3 bg-emerald-50/95 backdrop-blur-sm border border-emerald-300 text-emerald-800 text-xs font-semibold rounded-2xl flex items-center gap-2.5 shadow-xl">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+            <span className="flex-1 font-medium">{toastMessage}</span>
+          </div>
+        </div>,
+        document.body
       )}
 
       {/* Header & Quick Stats */}
@@ -192,7 +195,6 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
           </p>
         </div>
 
-        {/* Opens the Blast AC Gag Modal directly */}
         <button
           type="button"
           onClick={() => setShowBlastModal(true)}
@@ -225,7 +227,7 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
         )}
       </div>
 
-      {/* Flat-Sided / Squircle Filter Row (rounded-xl matching Supplies categories) */}
+      {/* Flat-Sided / Squircle Filter Row */}
       {!searchQuery && (
         <div className="flex flex-wrap gap-2 pt-0.5">
           {[1, 2, 3, 4, 5, 6, 7].map((f) => {
