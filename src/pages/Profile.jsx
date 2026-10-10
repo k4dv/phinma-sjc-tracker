@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
+import { supabase } from '../data/supabaseClient';
 import { 
   User, 
   KeyRound, 
@@ -56,7 +57,29 @@ export default function Profile({ user, onLogout, assignments = {} }) {
   const [errorMsg, setErrorMsg] = useState('');
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
-  // Compress photo down to ~25KB thumbnail so it never exceeds localStorage limits
+  // Sync avatar from Supabase on mount
+  useEffect(() => {
+    if (!user?.id) return;
+    const loadCloudAvatar = async () => {
+      try {
+        const { data } = await supabase
+          .from('profiles')
+          .select('avatar')
+          .eq('id', String(user.id))
+          .single();
+
+        if (data?.avatar) {
+          setAvatar(data.avatar);
+          localStorage.setItem(`sjc_avatar_${user.id}`, data.avatar);
+        }
+      } catch (err) {
+        console.error('Error fetching cloud avatar:', err);
+      }
+    };
+    loadCloudAvatar();
+  }, [user?.id]);
+
+  // Compress photo down to ~25KB thumbnail so it syncs fast and fits quotas
   const compressImage = (file) => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -85,7 +108,6 @@ export default function Profile({ user, onLogout, assignments = {} }) {
           const ctx = canvas.getContext('2d');
           ctx.drawImage(img, 0, 0, width, height);
 
-          // Compress to lightweight JPEG
           const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.85);
           resolve(compressedDataUrl);
         };
@@ -106,7 +128,19 @@ export default function Profile({ user, onLogout, assignments = {} }) {
       setAvatar(compressedBase64);
       const storageKey = `sjc_avatar_${user?.id || 'default'}`;
       localStorage.setItem(storageKey, compressedBase64);
-      setSuccessMsg('Profile picture updated and saved permanently!');
+
+      // Save to Supabase so it syncs across all devices & shows in Admin
+      if (user?.id) {
+        await supabase
+          .from('profiles')
+          .upsert({ 
+            id: String(user.id), 
+            avatar: compressedBase64, 
+            updated_at: new Date().toISOString() 
+          });
+      }
+
+      setSuccessMsg('Profile picture updated and synced everywhere!');
       setTimeout(() => setSuccessMsg(''), 3500);
     } catch (err) {
       console.error('Image compression error:', err);
@@ -115,11 +149,20 @@ export default function Profile({ user, onLogout, assignments = {} }) {
     }
   };
 
-  const handleRemoveAvatar = (e) => {
+  const handleRemoveAvatar = async (e) => {
     e.stopPropagation();
     setAvatar('');
     localStorage.removeItem(`sjc_avatar_${user?.id || 'default'}`);
     if (fileInputRef.current) fileInputRef.current.value = '';
+
+    if (user?.id) {
+      try {
+        await supabase.from('profiles').delete().eq('id', String(user.id));
+      } catch (err) {
+        console.error('Error removing cloud avatar:', err);
+      }
+    }
+
     setSuccessMsg('Profile picture reset to default crest.');
     setTimeout(() => setSuccessMsg(''), 3500);
   };
@@ -142,7 +185,7 @@ export default function Profile({ user, onLogout, assignments = {} }) {
     setTimeout(() => setSuccessMsg(''), 3500);
   };
 
-  const staffFloor = Object.entries(assignments).find(([floor, staffId]) => staffId === user?.id)?.[0] || 'Unassigned';
+  const staffFloor = Object.entries(assignments).find(([_, staffId]) => staffId === user?.id)?.[0] || 'Unassigned';
 
   const getStoredPassword = () => {
     const custom = localStorage.getItem(`sjc_pass_${user?.id}`);

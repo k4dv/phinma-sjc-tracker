@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation } from 'react-router-dom';
 import { supabase } from '../data/supabaseClient';
+import { api } from '../services/api';
 import BlastACModal from '../components/BlastACModal';
 import { 
   Building2, 
@@ -92,6 +93,7 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
       notes: notesVal
     };
 
+    // Optimistic local state update for instant UI feedback
     if (setRooms) {
       setRooms((prev) =>
         prev.map((r) =>
@@ -114,40 +116,23 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
     }
 
     try {
-      await supabase.from('rooms').update(updatedData).eq('id', activeModalRoom.id);
-      setToastMessage(`Room ${activeModalRoom.id} inspection recorded!`);
+      // Routed through Node.js & Express MVC Backend API
+      await api.updateRoom(activeModalRoom.id, updatedData);
+      setToastMessage(`Room ${activeModalRoom.id} inspection recorded via Express API!`);
       setTimeout(() => setToastMessage(''), 3000);
       handleCloseRoomModal();
     } catch (err) {
-      console.error('Failed to update room status:', err);
+      console.warn('Express API unavailable, attempting client fallback:', err);
+      try {
+        await supabase.from('rooms').update(updatedData).eq('id', activeModalRoom.id);
+        setToastMessage(`Room ${activeModalRoom.id} inspection recorded (offline mode)!`);
+        setTimeout(() => setToastMessage(''), 3000);
+        handleCloseRoomModal();
+      } catch (fallbackErr) {
+        console.error('All update paths failed:', fallbackErr);
+      }
     } finally {
       setIsSaving(false);
-    }
-  };
-
-  // Easter egg execution: Turns every classroom AC in the whole building ON (acChecked: false)
-  const handleBlastAllACs = async () => {
-    if (setRooms) {
-      setRooms((prev) =>
-        prev.map((r) => ({
-          ...r,
-          acChecked: false
-        }))
-      );
-    }
-
-    try {
-      const allRoomIds = rooms.map((r) => r.id);
-      if (allRoomIds.length > 0) {
-        await supabase
-          .from('rooms')
-          .update({ ac_checked: false })
-          .in('id', allRoomIds);
-      }
-      setToastMessage('🚨 Central climate bypass active: All 35 ACs turned ON!');
-      setTimeout(() => setToastMessage(''), 4000);
-    } catch (err) {
-      console.error('Failed building-wide AC blast:', err);
     }
   };
 
@@ -173,7 +158,7 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
   return (
     <div className="p-4 space-y-3.5 pb-28 text-slate-800">
       
-      {/* Floating Notification (Directly below header, zero layout shift) */}
+      {/* Floating Notification */}
       {toastMessage && createPortal(
         <div className="fixed top-20 inset-x-0 z-[150] max-w-md mx-auto px-4 pointer-events-none animate-toast">
           <div className="pointer-events-auto p-3 bg-emerald-50/95 backdrop-blur-sm border border-emerald-300 text-emerald-800 text-xs font-semibold rounded-2xl flex items-center gap-2.5 shadow-xl">
@@ -206,7 +191,7 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
         </button>
       </div>
 
-      {/* Supplies-Style Search Input Bar */}
+      {/* Search Input Bar */}
       <div className="relative">
         <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
         <input
@@ -227,7 +212,7 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
         )}
       </div>
 
-      {/* Flat-Sided / Squircle Filter Row */}
+      {/* Floor Filter Row */}
       {!searchQuery && (
         <div className="flex flex-wrap gap-2 pt-0.5">
           {[1, 2, 3, 4, 5, 6, 7].map((f) => {
@@ -280,7 +265,6 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
       <div className="space-y-2.5">
         {floorRooms.length > 0 ? (
           floorRooms.map((room) => {
-            const isDone = room.status === 'cleaned' || room.status === 'verified';
             const isReclean = room.status === 'needs_reclean';
 
             return (
@@ -357,7 +341,7 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
         )}
       </div>
 
-      {/* Mobile-fitted Room Inspection Modal */}
+      {/* Room Inspection Modal */}
       {activeModalRoom && createPortal(
         <div 
           className="fixed inset-0 z-[120] bg-black/65 backdrop-blur-xs flex items-end sm:items-center justify-center sm:p-4 select-none"
@@ -519,7 +503,7 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
 
             </div>
 
-            {/* Pinned Bottom Actions Bar */}
+            {/* Bottom Actions Bar */}
             <div className="p-3 px-4 bg-white border-t border-slate-100 flex items-center gap-2 flex-shrink-0">
               <button
                 type="button"
@@ -543,7 +527,7 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
         document.body
       )}
 
-      {/* Blast AC Gag & Paywall Modal */}
+      {/* Blast AC Modal */}
       <BlastACModal
         isOpen={showBlastModal}
         onClose={() => setShowBlastModal(false)}

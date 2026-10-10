@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { supabase } from '../data/supabaseClient';
+import { api } from '../services/api';
 import * as XLSX from 'xlsx';
 import { 
   Megaphone, 
@@ -50,6 +51,7 @@ export default function Admin({
 
   // Dropdown accordion state
   const [showStaffDropdown, setShowStaffDropdown] = useState(false);
+  const [staffAvatars, setStaffAvatars] = useState({});
 
   // Check animation preferences
   const animationsDisabled = localStorage.getItem('sjc_animations_disabled') === 'true';
@@ -77,6 +79,36 @@ export default function Admin({
     setErrorMessage(msg);
     setTimeout(() => setErrorMessage(''), 4000);
   };
+
+  // Load avatars from localStorage and Supabase
+  useEffect(() => {
+    const fetchAvatars = async () => {
+      const localMap = {};
+      OFFICIAL_STAFF_ROSTER.forEach((member) => {
+        const local = localStorage.getItem(`sjc_avatar_${member.id}`);
+        if (local) localMap[member.id] = local;
+      });
+      setStaffAvatars(localMap);
+
+      try {
+        const { data, error } = await supabase.from('profiles').select('id, avatar');
+        if (!error && data) {
+          const cloudMap = { ...localMap };
+          data.forEach((item) => {
+            if (item.avatar) {
+              cloudMap[item.id] = item.avatar;
+              localStorage.setItem(`sjc_avatar_${item.id}`, item.avatar);
+            }
+          });
+          setStaffAvatars(cloudMap);
+        }
+      } catch (err) {
+        console.error('Failed to load roster avatars:', err);
+      }
+    };
+
+    fetchAvatars();
+  }, []);
 
   // 1. Notice Broadcast Handlers
   const handleSaveBroadcast = async (e) => {
@@ -141,7 +173,7 @@ export default function Admin({
     }
   };
 
-  // 3. Supply Inventory Handlers
+  // 3. Supply Inventory Handlers (Connected to Express API)
   const handleAddSupplyItem = async (e) => {
     e.preventDefault();
     if (!newItemName.trim()) return;
@@ -159,18 +191,31 @@ export default function Admin({
     };
 
     try {
-      const { data, error } = await supabase.from('supplies').insert([newSupplyObj]).select();
-      if (error) throw error;
+      // POST /api/supplies via Express Controller & Model
+      const res = await api.addSupply(newSupplyObj);
+      const createdItem = res.data || res;
 
-      if (data && setSupplies) {
-        setSupplies((prev) => [...prev, data[0]]);
+      if (createdItem && setSupplies) {
+        setSupplies((prev) => [...prev, createdItem]);
       }
       setNewItemName('');
       setNewItemQty('');
-      showToast(`Added ${newSupplyObj.name} to central storage.`);
+      showToast(`Added ${newSupplyObj.name} via Express Backend!`);
     } catch (err) {
-      console.error('Failed to add supply:', err);
-      showError('Could not save new inventory item.');
+      console.warn('Express API unavailable, fallback to Supabase:', err);
+      try {
+        const { data, error } = await supabase.from('supplies').insert([newSupplyObj]).select();
+        if (error) throw error;
+        if (data && setSupplies) {
+          setSupplies((prev) => [...prev, data[0]]);
+        }
+        setNewItemName('');
+        setNewItemQty('');
+        showToast(`Added ${newSupplyObj.name} to central storage.`);
+      } catch (fallbackErr) {
+        console.error('Failed to add supply:', fallbackErr);
+        showError('Could not save new inventory item.');
+      }
     } finally {
       setIsAddingSupply(false);
     }
@@ -189,9 +234,15 @@ export default function Admin({
     }
 
     try {
-      await supabase.from('supplies').update({ quantity: updatedQty }).eq('id', supplyId);
+      // PUT /api/supplies/:id via Express
+      await api.updateSupplyQty(supplyId, updatedQty);
     } catch (err) {
-      console.error('Failed to adjust supply qty:', err);
+      console.warn('Express update failed, fallback to Supabase:', err);
+      try {
+        await supabase.from('supplies').update({ quantity: updatedQty }).eq('id', supplyId);
+      } catch (fallbackErr) {
+        console.error('Failed to adjust supply qty:', fallbackErr);
+      }
     }
   };
 
@@ -203,11 +254,18 @@ export default function Admin({
     }
 
     try {
-      await supabase.from('supplies').delete().eq('id', supplyId);
-      showToast(`Removed "${name}" from stock records.`);
+      // DELETE /api/supplies/:id via Express
+      await api.deleteSupply(supplyId);
+      showToast(`Removed "${name}" from stock records via Express.`);
     } catch (err) {
-      console.error('Failed to delete supply item:', err);
-      showError('Error deleting item from Supabase.');
+      console.warn('Express delete failed, fallback to Supabase:', err);
+      try {
+        await supabase.from('supplies').delete().eq('id', supplyId);
+        showToast(`Removed "${name}" from stock records.`);
+      } catch (fallbackErr) {
+        console.error('Failed to delete supply item:', fallbackErr);
+        showError('Error deleting item from database.');
+      }
     }
   };
 
@@ -317,7 +375,7 @@ export default function Admin({
         </div>
       )}
 
-      {/* Admin Header: Typography Matching Rooms Screen, Badge Below Title */}
+      {/* Admin Header */}
       <div>
         <h2 className="text-base font-bold text-slate-900 leading-tight">
           Campus Operations Management
@@ -330,7 +388,7 @@ export default function Admin({
         </div>
       </div>
 
-      {/* Smooth Gliding Tab Selector */}
+      {/* Tab Selector */}
       <div className="relative p-1 bg-slate-100/90 rounded-2xl grid grid-cols-4 select-none">
         <div
           className="absolute top-1 bottom-1 rounded-xl bg-white shadow-xs transition-transform duration-250 ease-out z-0 pointer-events-none"
@@ -355,13 +413,12 @@ export default function Admin({
         ))}
       </div>
 
-      {/* TAB CONTENT AREA */}
+      {/* Tab Content */}
       <div key={activeTab} className={!animationsDisabled ? 'animate-fade' : ''}>
         
         {/* TAB 1: STAFF */}
         {activeTab === 'staff' && (
           <div className="space-y-3.5">
-            {/* Collapsible Staff Dropdown */}
             <div className="bg-white rounded-3xl border border-slate-100 shadow-[0_2px_8px_rgba(0,0,0,0.02)] overflow-hidden">
               <button
                 type="button"
@@ -401,6 +458,7 @@ export default function Admin({
                 }`}>
                   {OFFICIAL_STAFF_ROSTER.map((member) => {
                     const isOnline = onlineUsers.some((u) => String(u.id) === String(member.id));
+                    const memberAvatar = staffAvatars[member.id];
                     const assignedFloors = Object.entries(assignments)
                       .filter(([_, id]) => id === member.id)
                       .map(([f]) => `F${f}`)
@@ -413,8 +471,16 @@ export default function Admin({
                       >
                         <div className="flex items-center gap-2.5">
                           <div className="relative flex-shrink-0">
-                            <div className="w-7 h-7 rounded-xl bg-emerald-100 text-[#176e57] flex items-center justify-center font-bold text-xs">
-                              {member.name[0]}
+                            <div className="w-7 h-7 rounded-xl bg-emerald-100 text-[#176e57] flex items-center justify-center font-bold text-xs overflow-hidden border border-emerald-300/40">
+                              {memberAvatar ? (
+                                <img
+                                  src={memberAvatar}
+                                  alt={member.name}
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                <span>{member.name[0]}</span>
+                              )}
                             </div>
                             <span className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border-2 border-white ${
                               isOnline ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'

@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import sjcLogo from '../assets/Logo.jpg';
 import schoolBg from '../assets/School.jpg';
-import { DEMO_STAFF } from '../data/mockData';
 import CaptchaModal from '../components/CaptchaModal';
 import { 
   User, 
@@ -24,6 +23,16 @@ import {
 const EMAILJS_SERVICE_ID = 'service_0od3tyo';
 const EMAILJS_TEMPLATE_ID = 'template_cwipfdc';
 const EMAILJS_PUBLIC_KEY = 'SKoJDpKyhviN9MWEQ';
+
+// Official SJC Custodial Team Roster
+const OFFICIAL_STAFF_ROSTER = [
+  { id: '001', name: 'Kuya Bert', role: 'staff' },
+  { id: '002', name: 'Ate Linda', role: 'staff' },
+  { id: '003', name: 'Kuya Jun', role: 'staff' },
+  { id: '004', name: 'Ate Marites', role: 'staff' },
+  { id: '005', name: 'Kuya Jomar', role: 'staff' },
+  { id: '06-2223-033162', name: 'Kuya Bert', role: 'staff' }
+];
 
 const getDestinationEmail = (accountId) => {
   const id = String(accountId || '').trim();
@@ -229,26 +238,33 @@ export default function Login({ onLoginSuccess }) {
 
     setTimeout(() => {
       let validatedUser = null;
+      const cleanInput = staffId.trim();
 
       if (loginMode === 'staff') {
-        const foundStaff = DEMO_STAFF.find(
-          (s) => s.id === staffId.trim() || staffId.trim() === '06-2223-033162'
+        // Matches "002", "2", "003", "3", etc.
+        const foundStaff = OFFICIAL_STAFF_ROSTER.find(
+          (s) => 
+            s.id.toLowerCase() === cleanInput.toLowerCase() || 
+            s.id.replace(/^0+/, '') === cleanInput.replace(/^0+/, '')
         );
-        const validPassword = getAccountPassword(staffId.trim());
+
+        const accountKey = foundStaff ? foundStaff.id : cleanInput;
+        const validPassword = getAccountPassword(accountKey);
 
         if (foundStaff && password === validPassword) {
           validatedUser = foundStaff;
-        } else if (staffId.trim() && password === validPassword) {
-          validatedUser = { id: staffId.trim(), name: 'Kuya Bert', role: 'staff' };
+        } else if (cleanInput && password === validPassword) {
+          // Custom staff ID
+          validatedUser = { id: cleanInput, name: `Staff Member (${cleanInput})`, role: 'staff' };
         } else {
-          setErrorMsg('Invalid staff credentials.');
+          setErrorMsg('Invalid staff credentials. (Staff IDs: 001 to 005)');
           setErrorKey((prev) => prev + 1);
           setIsCheckingCredentials(false);
           return;
         }
       } else {
         const validAdminPass = getAccountPassword('admin');
-        if (staffId.trim() === 'admin' && password === validAdminPass) {
+        if (cleanInput.toLowerCase() === 'admin' && password === validAdminPass) {
           validatedUser = { id: 'admin', name: 'Facilities Supervisor', role: 'admin' };
         } else {
           setErrorMsg('Invalid supervisor credentials.');
@@ -330,7 +346,6 @@ export default function Login({ onLoginSuccess }) {
         }
 
         setIsVerifyingCode(false);
-        // Hand off to App controller
         onLoginSuccess(pendingUser, rememberMe);
       } else {
         setOtpError('Invalid 6-digit security code. Please check your email and try again.');
@@ -364,7 +379,11 @@ export default function Login({ onLoginSuccess }) {
     if (query.toLowerCase() === 'admin') {
       found = { id: 'admin', name: 'Facilities Supervisor', role: 'admin' };
     } else {
-      found = DEMO_STAFF.find((s) => s.id === query);
+      found = OFFICIAL_STAFF_ROSTER.find(
+        (s) => 
+          s.id.toLowerCase() === query.toLowerCase() || 
+          s.id.replace(/^0+/, '') === query.replace(/^0+/, '')
+      );
     }
 
     if (!found) {
@@ -488,7 +507,7 @@ export default function Login({ onLoginSuccess }) {
                   autoComplete="off"
                   value={staffId}
                   onChange={(e) => setStaffId(e.target.value)}
-                  placeholder={loginMode === 'staff' ? 'Staff ID' : 'Admin Username'}
+                  placeholder={loginMode === 'staff' ? 'Staff ID (001 - 005)' : 'Admin Username'}
                   className="w-full pl-10 pr-4 py-2.5 border border-slate-300 rounded-xl text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#176e57] focus:ring-2 focus:ring-[#176e57]/15 bg-white transition duration-150"
                 />
               </div>

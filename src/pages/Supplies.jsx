@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from '../data/supabaseClient';
+import { api } from '../services/api';
 import { 
   Search, 
   AlertCircle, 
@@ -40,6 +41,7 @@ export default function Supplies({ supplies = [], setSupplies, user }) {
 
     const newQty = Math.max(0, target.quantity + change);
 
+    // Optimistic UI update
     if (setSupplies) {
       setSupplies((prev) =>
         prev.map((s) => (s.id === supplyId ? { ...s, quantity: newQty } : s))
@@ -47,9 +49,15 @@ export default function Supplies({ supplies = [], setSupplies, user }) {
     }
 
     try {
-      await supabase.from('supplies').update({ quantity: newQty }).eq('id', supplyId);
+      // Routed through Node.js Express Controller via Model
+      await api.updateSupplyQty(supplyId, newQty);
     } catch (err) {
-      console.error('Failed to update stock quantity:', err);
+      console.warn('Express API unavailable, using Supabase fallback:', err);
+      try {
+        await supabase.from('supplies').update({ quantity: newQty }).eq('id', supplyId);
+      } catch (fallbackErr) {
+        console.error('Failed to update stock quantity:', fallbackErr);
+      }
     }
   };
 
@@ -57,14 +65,21 @@ export default function Supplies({ supplies = [], setSupplies, user }) {
     if (!isAdmin) return;
     if (!window.confirm(`Delete "${supplyName}" from central inventory?`)) return;
 
+    // Optimistic UI update
     if (setSupplies) {
       setSupplies((prev) => prev.filter((s) => s.id !== supplyId));
     }
 
     try {
-      await supabase.from('supplies').delete().eq('id', supplyId);
+      // Routed through Node.js Express Controller via Model
+      await api.deleteSupply(supplyId);
     } catch (err) {
-      console.error('Failed to delete supply:', err);
+      console.warn('Express API unavailable, using Supabase fallback:', err);
+      try {
+        await supabase.from('supplies').delete().eq('id', supplyId);
+      } catch (fallbackErr) {
+        console.error('Failed to delete supply:', fallbackErr);
+      }
     }
   };
 
@@ -98,7 +113,7 @@ export default function Supplies({ supplies = [], setSupplies, user }) {
   return (
     <div className="p-4 space-y-3.5 pb-24">
       
-      {/* Header Row: Styled to match Rooms & Admin */}
+      {/* Header Row */}
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-base font-bold text-slate-900 leading-tight">
@@ -146,7 +161,7 @@ export default function Supplies({ supplies = [], setSupplies, user }) {
         />
       </div>
 
-      {/* Wrapping Category Chips */}
+      {/* Category Chips */}
       <div className="flex flex-wrap gap-1.5">
         {CATEGORIES.map((cat) => {
           const isSelected = selectedCategory === cat;

@@ -12,6 +12,7 @@ import Profile from './pages/Profile';
 import QRDoorRouter from './pages/QRDoorRouter';
 import QRScannerModal from './components/QRScannerModal';
 import { supabase } from './data/supabaseClient';
+import { api } from './services/api';
 import sjcLogo from './assets/Logo.jpg';
 import schoolBg from './assets/School.jpg';
 import { Megaphone, QrCode } from 'lucide-react';
@@ -85,46 +86,68 @@ export default function App() {
     localStorage.removeItem('sjc_theme');
   }, []);
 
-  // 1. Initial Data Fetch from Supabase & Cache Synchronization
+  // 1. Initial Data Fetch via Node/Express MVC API (with Supabase fallback)
   useEffect(() => {
     const fetchInitialData = async () => {
       try {
-        const [roomsRes, suppliesRes, assignRes, broadRes, logsRes, reqsRes] = await Promise.all([
-          supabase.from('rooms').select('*').order('id', { ascending: true }),
-          supabase.from('supplies').select('*').order('id', { ascending: true }),
+        // Fetch Rooms & Supplies from the Node.js Express Backend
+        const [backendRooms, backendSupplies, assignRes, broadRes, logsRes, reqsRes] = await Promise.all([
+          api.getRooms().catch((err) => {
+            console.warn('Express rooms API offline, falling back to Supabase client:', err);
+            return null;
+          }),
+          api.getSupplies().catch((err) => {
+            console.warn('Express supplies API offline, falling back to Supabase client:', err);
+            return null;
+          }),
           supabase.from('assignments').select('*'),
           supabase.from('broadcast').select('*').limit(1),
           supabase.from('logs').select('*').order('created_at', { ascending: false }).limit(20),
           supabase.from('teacher_requests').select('*').order('created_at', { ascending: false }).limit(20)
         ]);
 
-        if (roomsRes.data?.length) {
-          const formattedRooms = roomsRes.data.map((r) => ({
+        // Process Rooms
+        let rawRooms = backendRooms;
+        if (!rawRooms) {
+          const fallback = await supabase.from('rooms').select('*').order('id', { ascending: true });
+          rawRooms = fallback.data || [];
+        }
+
+        if (rawRooms?.length) {
+          const formattedRooms = rawRooms.map((r) => ({
             id: r.id,
             floor: r.floor,
             status: r.status,
             staff: r.staff,
-            lastCleaned: r.last_cleaned,
-            recleanReason: r.reclean_reason,
-            acChecked: r.ac_checked,
-            lightsChecked: r.lights_checked,
-            doorChecked: r.door_checked,
-            hasStudents: r.has_students ?? false,
-            has_students: r.has_students ?? false,
+            lastCleaned: r.last_cleaned || r.lastCleaned,
+            recleanReason: r.reclean_reason || r.recleanReason,
+            acChecked: r.ac_checked ?? r.acChecked,
+            lightsChecked: r.lights_checked ?? r.lightsChecked,
+            doorChecked: r.door_checked ?? r.doorChecked,
+            hasStudents: r.has_students ?? r.hasStudents ?? false,
+            has_students: r.has_students ?? r.hasStudents ?? false,
             notes: r.notes ?? ''
           }));
           setRooms(formattedRooms);
           localStorage.setItem('sjc_cached_rooms', JSON.stringify(formattedRooms));
         }
 
-        if (suppliesRes.data?.length) setSupplies(suppliesRes.data);
+        // Process Supplies
+        let rawSupplies = backendSupplies;
+        if (!rawSupplies) {
+          const fallback = await supabase.from('supplies').select('*').order('id', { ascending: true });
+          rawSupplies = fallback.data || [];
+        }
+        if (rawSupplies?.length) setSupplies(rawSupplies);
 
+        // Process Assignments
         if (assignRes.data?.length) {
           const assignMap = {};
           assignRes.data.forEach((a) => { assignMap[a.floor] = a.staff_id; });
           setAssignments(assignMap);
         }
 
+        // Process Broadcast Notice
         if (broadRes.data && broadRes.data.length > 0) {
           const b = broadRes.data[0];
           setBroadcast({
@@ -135,6 +158,7 @@ export default function App() {
           });
         }
 
+        // Process Logs & Requests
         if (logsRes.data?.length) setLogs(logsRes.data);
 
         if (reqsRes.data?.length) {
@@ -142,7 +166,7 @@ export default function App() {
           localStorage.setItem('sjc_teacher_requests', JSON.stringify(reqsRes.data));
         }
       } catch (err) {
-        console.warn('Initial Supabase fetch fallback to local cache:', err);
+        console.warn('Initial fetch error:', err);
       }
     };
 
@@ -302,7 +326,6 @@ export default function App() {
   const handleLoginSuccess = (userData, remember) => {
     sessionStorage.removeItem('sjc_dash_animated');
 
-    // Dismiss any active mobile virtual keyboard to reset viewport
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
     }
@@ -374,9 +397,7 @@ export default function App() {
   return (
     <div className="max-w-md mx-auto min-h-screen bg-[#f8fafc] shadow-xl flex flex-col relative overflow-x-hidden font-sans">
       
-      {/* ============================================================== */}
-      {/* CINEMATIC CURTAIN (GPU ACCELERATED & SMOOTH MOBILE RENDER)     */}
-      {/* ============================================================== */}
+      {/* CINEMATIC CURTAIN */}
       {isCurtainActive && (
         <div 
           className={`fixed inset-x-0 top-0 z-50 overflow-hidden flex flex-col justify-center items-center text-white bg-slate-950 max-w-md mx-auto pointer-events-none will-change-transform ${

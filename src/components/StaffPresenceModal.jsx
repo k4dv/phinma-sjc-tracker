@@ -1,28 +1,57 @@
-import React from 'react';
-import { DEMO_STAFF } from '../data/mockData';
+import React, { useState, useEffect } from 'react';
 import { Users, X, Shield, User, Building2, CheckCircle2 } from 'lucide-react';
 
+// Official SJC Custodial Team Roster (Independent of mockData.js)
 const ALL_ROSTER = [
   { id: 'admin', name: 'Facilities Supervisor', role: 'admin', shift: 'Full Campus Duty' },
-  ...DEMO_STAFF
+  { id: '001', name: 'Kuya Bert', role: 'staff', shift: 'Morning Shift' },
+  { id: '002', name: 'Ate Linda', role: 'staff', shift: 'Morning Shift' },
+  { id: '003', name: 'Kuya Jun', role: 'staff', shift: 'Morning Shift' },
+  { id: '004', name: 'Ate Marites', role: 'staff', shift: 'Afternoon Shift' },
+  { id: '005', name: 'Kuya Jomar', role: 'staff', shift: 'Night Shift' }
 ];
 
-export default function StaffPresenceModal({ isOpen, onClose, onlineUsers = [], assignments = {}, currentUser }) {
+export default function StaffPresenceModal({ 
+  isOpen, 
+  onClose, 
+  onlineUsers = [], 
+  assignments = {}, 
+  currentUser 
+}) {
   if (!isOpen) return null;
+
+  // Retrieve cached profile pictures if any were uploaded
+  const getAvatar = (id) => {
+    return localStorage.getItem(`sjc_avatar_${id}`) || '';
+  };
 
   // Determine assigned floors for each staff member
   const getAssignedFloors = (staffId) => {
     if (staffId === 'admin') return 'All Floors (Supervisor)';
+    const cleanStaffId = String(staffId).replace(/^0+/, '');
+    
     const assigned = Object.entries(assignments)
-      .filter(([_, id]) => String(id) === String(staffId))
+      .filter(([_, id]) => String(id).replace(/^0+/, '') === cleanStaffId)
       .map(([floor]) => `F${floor}`);
+      
     return assigned.length > 0 ? assigned.join(', ') : 'Unassigned';
   };
 
-  // Check if staff member is online in real time (always includes current user)
+  // Check if staff member is online in real time (flexible for 001 vs 1)
   const isStaffOnline = (staffId) => {
-    if (currentUser && String(currentUser.id) === String(staffId)) return true;
-    return onlineUsers.some((u) => String(u.id) === String(staffId));
+    const cleanTarget = String(staffId).replace(/^0+/, '').toLowerCase();
+
+    // If the person currently viewing the modal is this staff member
+    if (currentUser) {
+      const cleanCurrent = String(currentUser.id || '').replace(/^0+/, '').toLowerCase();
+      if (cleanCurrent === cleanTarget) return true;
+    }
+
+    // Check if present in Supabase live presence
+    return onlineUsers.some((u) => {
+      const cleanUser = String(u.id || '').replace(/^0+/, '').toLowerCase();
+      return cleanUser === cleanTarget;
+    });
   };
 
   // Sort: Online personnel first
@@ -37,7 +66,7 @@ export default function StaffPresenceModal({ isOpen, onClose, onlineUsers = [], 
 
   return (
     <div 
-      className="fixed inset-0 z-50 bg-black/45 backdrop-blur-[2px] flex items-end sm:items-center justify-center p-0 sm:p-4 animate-fade-backdrop"
+      className="fixed inset-0 z-50 bg-black/45 backdrop-blur-[2px] flex items-end sm:items-center justify-center p-0 sm:p-4 animate-fade-backdrop select-none"
       onClick={onClose}
     >
       <div 
@@ -71,8 +100,11 @@ export default function StaffPresenceModal({ isOpen, onClose, onlineUsers = [], 
         <div className="space-y-2.5 overflow-y-auto pr-1 flex-1">
           {sortedRoster.map((staff) => {
             const online = isStaffOnline(staff.id);
-            const isMe = currentUser && String(currentUser.id) === String(staff.id);
+            const isMe = currentUser && (
+              String(currentUser.id).replace(/^0+/, '') === String(staff.id).replace(/^0+/, '')
+            );
             const assignedFloors = getAssignedFloors(staff.id);
+            const avatarUrl = getAvatar(staff.id);
 
             return (
               <div
@@ -85,13 +117,23 @@ export default function StaffPresenceModal({ isOpen, onClose, onlineUsers = [], 
               >
                 <div className="flex items-center gap-3">
                   {/* Avatar with Live Indicator */}
-                  <div className="relative">
-                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-xs shadow-xs ${
+                  <div className="relative flex-shrink-0">
+                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-xs shadow-xs overflow-hidden ${
                       staff.role === 'admin' 
                         ? 'bg-amber-600 text-white' 
                         : 'bg-[#176e57] text-white'
                     }`}>
-                      {staff.role === 'admin' ? <Shield className="w-4 h-4" /> : staff.name[0]}
+                      {avatarUrl ? (
+                        <img 
+                          src={avatarUrl} 
+                          alt={staff.name} 
+                          className="w-full h-full object-cover" 
+                        />
+                      ) : staff.role === 'admin' ? (
+                        <Shield className="w-4 h-4" />
+                      ) : (
+                        <span>{staff.name[0]}</span>
+                      )}
                     </div>
                     {/* Pulsing Green or Grey Dot */}
                     <span
@@ -113,7 +155,7 @@ export default function StaffPresenceModal({ isOpen, onClose, onlineUsers = [], 
                       )}
                     </div>
                     <p className="text-[10px] text-slate-500 mt-0.5">
-                      {staff.role === 'admin' ? 'Campus Supervisor' : `ID: ${staff.id} • ${staff.shift || 'Morning Shift'}`}
+                      {staff.role === 'admin' ? 'Campus Supervisor' : `ID: ${staff.id} • ${staff.shift}`}
                     </p>
                     <div className="flex items-center gap-1 text-[10px] text-slate-600 mt-0.5 font-medium">
                       <Building2 className="w-3 h-3 text-slate-400" />
