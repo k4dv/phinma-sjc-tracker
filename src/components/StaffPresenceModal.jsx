@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Users, X, Shield, User, Building2, CheckCircle2 } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { supabase } from '../data/supabaseClient';
+import { api } from '../services/api';
+import { Users, X, Shield, Building2, CheckCircle2 } from 'lucide-react';
 
-// Official SJC Custodial Team Roster (Independent of mockData.js)
-const ALL_ROSTER = [
+const FALLBACK_ROSTER = [
   { id: 'admin', name: 'Facilities Supervisor', role: 'admin', shift: 'Full Campus Duty' },
   { id: '001', name: 'Kuya Bert', role: 'staff', shift: 'Morning Shift' },
   { id: '002', name: 'Ate Linda', role: 'staff', shift: 'Morning Shift' },
@@ -18,14 +20,74 @@ export default function StaffPresenceModal({
   assignments = {}, 
   currentUser 
 }) {
-  if (!isOpen) return null;
+  const [staffList, setStaffList] = useState(FALLBACK_ROSTER);
+  const [avatars, setAvatars] = useState({});
 
-  // Retrieve cached profile pictures if any were uploaded
+  // Fetch full live roster from database when modal opens
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const fetchAllStaff = async () => {
+      try {
+        const users = await api.getUsers();
+        if (users && users.length > 0) {
+          setStaffList(users.map((u) => ({
+            ...u,
+            name: (u.name && u.name !== 'Staff Member')
+              ? u.name
+              : (FALLBACK_ROSTER.find((f) => f.id === u.id)?.name || u.name || `Staff ${u.id}`),
+            shift: u.shift || (u.role === 'admin' ? 'Full Campus Duty' : 'Morning Shift')
+          })));
+        }
+      } catch {
+        try {
+          const { data, error } = await supabase.from('profiles').select('*').order('id', { ascending: true });
+          if (!error && data && data.length > 0) {
+            setStaffList(data.map((u) => ({
+              ...u,
+              name: (u.name && u.name !== 'Staff Member')
+                ? u.name
+                : (FALLBACK_ROSTER.find((f) => f.id === u.id)?.name || u.name || `Staff ${u.id}`),
+              shift: u.shift || (u.role === 'admin' ? 'Full Campus Duty' : 'Morning Shift')
+            })));
+          }
+        } catch (err) {
+          console.error('Failed to load roster:', err);
+        }
+      }
+
+      // Fetch avatar photos
+      try {
+        const localMap = {};
+        FALLBACK_ROSTER.forEach((m) => {
+          const local = localStorage.getItem(`sjc_avatar_${m.id}`);
+          if (local) localMap[m.id] = local;
+        });
+
+        const { data } = await supabase.from('profiles').select('id, avatar');
+        if (data) {
+          data.forEach((item) => {
+            if (item.avatar) {
+              localMap[item.id] = item.avatar;
+              localStorage.setItem(`sjc_avatar_${item.id}`, item.avatar);
+            }
+          });
+        }
+        setAvatars(localMap);
+      } catch (err) {
+        console.warn('Avatars lookup warning:', err);
+      }
+    };
+
+    fetchAllStaff();
+  }, [isOpen]);
+
+  if (!isOpen || typeof document === 'undefined') return null;
+
   const getAvatar = (id) => {
-    return localStorage.getItem(`sjc_avatar_${id}`) || '';
+    return avatars[id] || localStorage.getItem(`sjc_avatar_${id}`) || '';
   };
 
-  // Determine assigned floors for each staff member
   const getAssignedFloors = (staffId) => {
     if (staffId === 'admin') return 'All Floors (Supervisor)';
     const cleanStaffId = String(staffId).replace(/^0+/, '');
@@ -37,17 +99,14 @@ export default function StaffPresenceModal({
     return assigned.length > 0 ? assigned.join(', ') : 'Unassigned';
   };
 
-  // Check if staff member is online in real time (flexible for 001 vs 1)
   const isStaffOnline = (staffId) => {
     const cleanTarget = String(staffId).replace(/^0+/, '').toLowerCase();
 
-    // If the person currently viewing the modal is this staff member
     if (currentUser) {
       const cleanCurrent = String(currentUser.id || '').replace(/^0+/, '').toLowerCase();
       if (cleanCurrent === cleanTarget) return true;
     }
 
-    // Check if present in Supabase live presence
     return onlineUsers.some((u) => {
       const cleanUser = String(u.id || '').replace(/^0+/, '').toLowerCase();
       return cleanUser === cleanTarget;
@@ -55,48 +114,48 @@ export default function StaffPresenceModal({
   };
 
   // Sort: Online personnel first
-  const sortedRoster = [...ALL_ROSTER].sort((a, b) => {
+  const sortedRoster = [...staffList].sort((a, b) => {
     const aOnline = isStaffOnline(a.id);
     const bOnline = isStaffOnline(b.id);
     if (aOnline === bOnline) return 0;
     return aOnline ? -1 : 1;
   });
 
-  const onlineCount = ALL_ROSTER.filter((s) => isStaffOnline(s.id)).length;
+  const onlineCount = staffList.filter((s) => isStaffOnline(s.id)).length;
 
-  return (
+  return createPortal(
     <div 
-      className="fixed inset-0 z-50 bg-black/45 backdrop-blur-[2px] flex items-end sm:items-center justify-center p-0 sm:p-4 animate-fade-backdrop select-none"
+      className="fixed inset-0 z-[100] bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-backdrop select-none"
       onClick={onClose}
     >
       <div 
-        className="bg-white w-full max-w-md rounded-t-[28px] sm:rounded-2xl p-5 shadow-2xl space-y-4 animate-sheet-up border-t sm:border border-slate-100 max-h-[85vh] flex flex-col"
+        className="bg-white w-full max-w-sm rounded-3xl p-5 shadow-2xl border border-slate-100 flex flex-col max-h-[85vh] animate-sheet-up overflow-hidden space-y-3.5"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-slate-100 pb-3 flex-shrink-0">
+        <div className="flex items-center justify-between border-b border-slate-100 pb-2.5 flex-shrink-0">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-emerald-50 text-[#176e57] flex items-center justify-center">
+            <div className="p-1.5 bg-emerald-50 text-[#176e57] rounded-xl">
               <Users className="w-4 h-4" />
             </div>
             <div>
-              <h2 className="text-sm font-bold text-slate-800">Custodial Staff Presence</h2>
+              <h2 className="text-sm font-bold text-slate-800">Staff Presence</h2>
               <p className="text-[10px] text-slate-400">
                 <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 mr-1 animate-pulse" />
-                <strong>{onlineCount}</strong> online now • {ALL_ROSTER.length - onlineCount} off-duty
+                <strong>{onlineCount}</strong> online now &bull; {staffList.length - onlineCount} off-duty
               </p>
             </div>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100 active:scale-90 transition"
+            className="p-1 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition"
           >
-            <X className="w-4 h-4" />
+            <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Staff Roster List */}
+        {/* Scrollable Staff Roster List */}
         <div className="space-y-2.5 overflow-y-auto pr-1 flex-1">
           {sortedRoster.map((staff) => {
             const online = isStaffOnline(staff.id);
@@ -116,7 +175,7 @@ export default function StaffPresenceModal({
                 }`}
               >
                 <div className="flex items-center gap-3">
-                  {/* Avatar with Live Indicator */}
+                  {/* Avatar with Live Status Indicator */}
                   <div className="relative flex-shrink-0">
                     <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-xs shadow-xs overflow-hidden ${
                       staff.role === 'admin' 
@@ -132,10 +191,9 @@ export default function StaffPresenceModal({
                       ) : staff.role === 'admin' ? (
                         <Shield className="w-4 h-4" />
                       ) : (
-                        <span>{staff.name[0]}</span>
+                        <span>{staff.name ? staff.name[0] : 'U'}</span>
                       )}
                     </div>
-                    {/* Pulsing Green or Grey Dot */}
                     <span
                       className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white ${
                         online ? 'bg-emerald-500 ring-2 ring-emerald-400/40' : 'bg-slate-300'
@@ -155,7 +213,9 @@ export default function StaffPresenceModal({
                       )}
                     </div>
                     <p className="text-[10px] text-slate-500 mt-0.5">
-                      {staff.role === 'admin' ? 'Campus Supervisor' : `ID: ${staff.id} • ${staff.shift}`}
+                      {staff.role === 'admin' 
+                        ? 'Campus Supervisor' 
+                        : `ID: ${staff.id} • ${staff.shift || 'General Shift'}`}
                     </p>
                     <div className="flex items-center gap-1 text-[10px] text-slate-600 mt-0.5 font-medium">
                       <Building2 className="w-3 h-3 text-slate-400" />
@@ -164,7 +224,7 @@ export default function StaffPresenceModal({
                   </div>
                 </div>
 
-                {/* Status Pill */}
+                {/* Status Badge */}
                 <div className="text-right">
                   {online ? (
                     <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded-lg animate-pop">
@@ -182,6 +242,7 @@ export default function StaffPresenceModal({
           })}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

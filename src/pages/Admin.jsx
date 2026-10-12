@@ -654,7 +654,7 @@ export default function Admin({
                   <div>
                     <div className="flex items-center gap-2">
                       <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wide">
-                        Staff Roster ({staffRoster.length})
+                        Staff ({staffRoster.length})
                       </h3>
                       <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
                         <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
