@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import sjcLogo from '../assets/Logo.jpg';
 import schoolBg from '../assets/School.jpg';
 import CaptchaModal from '../components/CaptchaModal';
+import { supabase } from '../data/supabaseClient';
 import { 
   User, 
   Lock, 
@@ -24,14 +25,14 @@ const EMAILJS_SERVICE_ID = 'service_0od3tyo';
 const EMAILJS_TEMPLATE_ID = 'template_cwipfdc';
 const EMAILJS_PUBLIC_KEY = 'SKoJDpKyhviN9MWEQ';
 
-// Official SJC Custodial Team Roster
+// Fallback SJC Custodial Team Roster
 const OFFICIAL_STAFF_ROSTER = [
-  { id: '001', name: 'Kuya Bert', role: 'staff' },
-  { id: '002', name: 'Ate Linda', role: 'staff' },
-  { id: '003', name: 'Kuya Jun', role: 'staff' },
-  { id: '004', name: 'Ate Marites', role: 'staff' },
-  { id: '005', name: 'Kuya Jomar', role: 'staff' },
-  { id: '06-2223-033162', name: 'Kuya Bert', role: 'staff' }
+  { id: '001', name: 'Kuya Bert', role: 'staff', access_level: 1 },
+  { id: '002', name: 'Ate Linda', role: 'staff', access_level: 1 },
+  { id: '003', name: 'Kuya Jun', role: 'staff', access_level: 1 },
+  { id: '004', name: 'Ate Marites', role: 'staff', access_level: 1 },
+  { id: '005', name: 'Kuya Jomar', role: 'staff', access_level: 1 },
+  { id: '06-2223-033162', name: 'Kuya Bert', role: 'staff', access_level: 1 }
 ];
 
 const getDestinationEmail = (accountId) => {
@@ -39,28 +40,30 @@ const getDestinationEmail = (accountId) => {
   if (id === '002' || id === '2' || id.endsWith('02')) {
     return 'cami.ubuwon.sjc@phinmaed.com';
   }
+  if (id === '003' || id === '3' || id.endsWith('03')) {
+    return 'anco.alfanta.sjc@phinmaed.com';
+  }
+  if (id === '004' || id === '4' || id.endsWith('04')) {
+    return 'rade.copones.sjc@phinmaed.com';
+  }
   return 'vhma.nacion.sjc@phinmaed.com';
 };
 
 const PHINMA_STAFF_EMAILS = {
   '001': 'vhma.nacion.sjc@phinmaed.com',
   '002': 'cami.ubuwon.sjc@phinmaed.com',
-  '003': 'vhma.nacion.sjc@phinmaed.com',
-  '004': 'vhma.nacion.sjc@phinmaed.com',
+  '003': 'anco.alfanta.sjc@phinmaed.com',
+  '004': 'rade.copones.sjc@phinmaed.com',
   '005': 'vhma.nacion.sjc@phinmaed.com',
   'admin': 'vhma.nacion.sjc@phinmaed.com'
 };
 
 const TRUST_DURATION_DAYS = 30;
 
-const getAccountPassword = (accountId) => {
+const getAccountPasswordFallback = (accountId) => {
   const custom = localStorage.getItem(`sjc_pass_${accountId}`);
   if (custom) return custom;
-  return accountId === 'admin' ? 'admin123' : 'password123';
-};
-
-const setAccountPassword = (accountId, newPassword) => {
-  localStorage.setItem(`sjc_pass_${accountId}`, newPassword);
+  return accountId === 'admin' ? 'password123' : 'sjc1234';
 };
 
 const isDeviceTrustedForAccount = (accountId) => {
@@ -223,61 +226,95 @@ export default function Login({ onLoginSuccess }) {
     }
   };
 
-  const handlePasswordSubmit = (e) => {
+  // Authenticate against database profiles table with offline resilience
+  const handlePasswordSubmit = async (e) => {
     e.preventDefault();
     setErrorMsg('');
 
     const now = Date.now();
-    if (now - lastAttemptTime < 2500) {
-      setErrorMsg('Too many attempts. Please wait a moment.');
+    if (now - lastAttemptTime < 1800) {
+      setErrorMsg('Please wait a moment before trying again.');
       return;
     }
     setLastAttemptTime(now);
 
     setIsCheckingCredentials(true);
+    const cleanInput = staffId.trim();
 
-    setTimeout(() => {
-      let validatedUser = null;
-      const cleanInput = staffId.trim();
+    try {
+      // 1. Primary check: Query real Supabase profiles table
+      const { data: dbUser, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .ilike('id', cleanInput)
+        .maybeSingle();
 
-      if (loginMode === 'staff') {
-        // Matches "002", "2", "003", "3", etc.
-        const foundStaff = OFFICIAL_STAFF_ROSTER.find(
-          (s) => 
-            s.id.toLowerCase() === cleanInput.toLowerCase() || 
-            s.id.replace(/^0+/, '') === cleanInput.replace(/^0+/, '')
-        );
+      if (!error && dbUser) {
+        if (dbUser.password === password) {
+          if (loginMode === 'admin' && dbUser.role !== 'admin' && Number(dbUser.access_level) < 2) {
+            setErrorMsg('Access Denied: This account lacks Supervisor credentials.');
+            setErrorKey((prev) => prev + 1);
+            setIsCheckingCredentials(false);
+            return;
+          }
 
-        const accountKey = foundStaff ? foundStaff.id : cleanInput;
-        const validPassword = getAccountPassword(accountKey);
+          const authenticatedUser = {
+            id: dbUser.id,
+            name: dbUser.name || (dbUser.role === 'admin' ? 'Facilities Supervisor' : 'Staff Member'),
+            role: dbUser.role || (loginMode === 'admin' ? 'admin' : 'staff'),
+            access_level: dbUser.access_level || (dbUser.role === 'admin' ? 2 : 1),
+            is_first_login: Boolean(dbUser.is_first_login),
+            avatar: dbUser.avatar || null
+          };
 
-        if (foundStaff && password === validPassword) {
-          validatedUser = foundStaff;
-        } else if (cleanInput && password === validPassword) {
-          // Custom staff ID
-          validatedUser = { id: cleanInput, name: `Staff Member (${cleanInput})`, role: 'staff' };
-        } else {
-          setErrorMsg('Invalid staff credentials. (Staff IDs: 001 to 005)');
-          setErrorKey((prev) => prev + 1);
+          setStagedUser(authenticatedUser);
           setIsCheckingCredentials(false);
+          setShowCaptchaModal(true);
           return;
-        }
-      } else {
-        const validAdminPass = getAccountPassword('admin');
-        if (cleanInput.toLowerCase() === 'admin' && password === validAdminPass) {
-          validatedUser = { id: 'admin', name: 'Facilities Supervisor', role: 'admin' };
         } else {
-          setErrorMsg('Invalid supervisor credentials.');
+          setErrorMsg('Incorrect password. Please verify your credentials.');
           setErrorKey((prev) => prev + 1);
           setIsCheckingCredentials(false);
           return;
         }
       }
+    } catch (dbErr) {
+      console.warn('Database auth connection failed, testing local fallback:', dbErr);
+    }
 
-      setStagedUser(validatedUser);
+    // 2. Offline / Local fallback if Supabase is unreachable
+    let fallbackUser = null;
+    if (loginMode === 'staff') {
+      const foundStaff = OFFICIAL_STAFF_ROSTER.find(
+        (s) => 
+          s.id.toLowerCase() === cleanInput.toLowerCase() || 
+          s.id.replace(/^0+/, '') === cleanInput.replace(/^0+/, '')
+      );
+
+      const accountKey = foundStaff ? foundStaff.id : cleanInput;
+      const validPassword = getAccountPasswordFallback(accountKey);
+
+      if (foundStaff && password === validPassword) {
+        fallbackUser = { ...foundStaff, is_first_login: false };
+      } else if (cleanInput && password === validPassword) {
+        fallbackUser = { id: cleanInput, name: `Staff Member (${cleanInput})`, role: 'staff', access_level: 1, is_first_login: false };
+      }
+    } else {
+      const validAdminPass = getAccountPasswordFallback('admin');
+      if (cleanInput.toLowerCase() === 'admin' && password === validAdminPass) {
+        fallbackUser = { id: 'admin', name: 'Facilities Supervisor', role: 'admin', access_level: 2, is_first_login: false };
+      }
+    }
+
+    if (fallbackUser) {
+      setStagedUser(fallbackUser);
       setIsCheckingCredentials(false);
       setShowCaptchaModal(true);
-    }, 300);
+    } else {
+      setErrorMsg(loginMode === 'admin' ? 'Invalid supervisor credentials.' : 'Invalid staff ID or password.');
+      setErrorKey((prev) => prev + 1);
+      setIsCheckingCredentials(false);
+    }
   };
 
   const handleCaptchaSuccess = () => {
@@ -290,7 +327,7 @@ export default function Login({ onLoginSuccess }) {
       localStorage.removeItem('sjc_remembered_staff_id');
     }
 
-    // If device is already trusted, hand off directly to App controller
+    // Direct login if device is already trusted
     if (isDeviceTrustedForAccount(stagedUser.id)) {
       onLoginSuccess(stagedUser, rememberMe);
       return;
@@ -376,18 +413,34 @@ export default function Login({ onLoginSuccess }) {
     }
 
     let found = null;
-    if (query.toLowerCase() === 'admin') {
-      found = { id: 'admin', name: 'Facilities Supervisor', role: 'admin' };
-    } else {
-      found = OFFICIAL_STAFF_ROSTER.find(
-        (s) => 
-          s.id.toLowerCase() === query.toLowerCase() || 
-          s.id.replace(/^0+/, '') === query.replace(/^0+/, '')
-      );
+    try {
+      const { data: dbUser } = await supabase
+        .from('profiles')
+        .select('*')
+        .ilike('id', query)
+        .maybeSingle();
+
+      if (dbUser) {
+        found = { id: dbUser.id, name: dbUser.name, role: dbUser.role };
+      }
+    } catch {
+      // Fallback lookup
     }
 
     if (!found) {
-      setForgotError('Staff ID not found in institutional roster.');
+      if (query.toLowerCase() === 'admin') {
+        found = { id: 'admin', name: 'Facilities Supervisor', role: 'admin' };
+      } else {
+        found = OFFICIAL_STAFF_ROSTER.find(
+          (s) => 
+            s.id.toLowerCase() === query.toLowerCase() || 
+            s.id.replace(/^0+/, '') === query.replace(/^0+/, '')
+        );
+      }
+    }
+
+    if (!found) {
+      setForgotError('Staff ID not found in institutional records.');
       return;
     }
 
@@ -409,20 +462,31 @@ export default function Login({ onLoginSuccess }) {
     }
   };
 
-  const handleSaveNewPassword = (e) => {
+  const handleSaveNewPassword = async (e) => {
     e.preventDefault();
     if (!newPasswordInput.trim() || newPasswordInput.length < 4) {
       setForgotError('New password must be at least 4 characters long.');
       return;
     }
 
-    setAccountPassword(forgotFoundUser.id, newPasswordInput.trim());
+    const cleanPass = newPasswordInput.trim();
+
+    try {
+      await supabase
+        .from('profiles')
+        .update({ password: cleanPass, is_first_login: false })
+        .eq('id', forgotFoundUser.id);
+    } catch (err) {
+      console.warn('Failed to save to cloud database, saving locally:', err);
+    }
+
+    localStorage.setItem(`sjc_pass_${forgotFoundUser.id}`, cleanPass);
     setResetSuccess(true);
 
     setTimeout(() => {
       setShowForgotModal(false);
       setStaffId(forgotFoundUser.id);
-      setPassword(newPasswordInput.trim());
+      setPassword(cleanPass);
     }, 1200);
   };
 
@@ -481,7 +545,7 @@ export default function Login({ onLoginSuccess }) {
               </h2>
               <p className="text-xs text-slate-500 mt-0.5">
                 {loginMode === 'staff'
-                  ? 'Enter your custodial ID to access daily rooms & supplies.'
+                  ? 'Enter your Staff ID to access daily rooms & supplies.'
                   : 'Facilities Supervisor multi-factor protected portal.'}
               </p>
             </div>
@@ -507,7 +571,7 @@ export default function Login({ onLoginSuccess }) {
                   autoComplete="off"
                   value={staffId}
                   onChange={(e) => setStaffId(e.target.value)}
-                  placeholder={loginMode === 'staff' ? 'Staff ID (001 - 005)' : 'Admin Username'}
+                  placeholder={loginMode === 'staff' ? 'Staff ID' : 'Admin Username'}
                   className="w-full pl-10 pr-4 py-2.5 border border-slate-300 rounded-xl text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#176e57] focus:ring-2 focus:ring-[#176e57]/15 bg-white transition duration-150"
                 />
               </div>
@@ -566,7 +630,7 @@ export default function Login({ onLoginSuccess }) {
                 {isCheckingCredentials ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin text-white" />
-                    <span>Checking credentials...</span>
+                    <span>Verifying account...</span>
                   </>
                 ) : (
                   <>
@@ -755,7 +819,7 @@ export default function Login({ onLoginSuccess }) {
             {forgotStep === 1 && (
               <form onSubmit={handleSendRecoveryCode} className="space-y-3">
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  Enter your Staff ID. A 6 Digit code will be sent to your email
+                  Enter your Staff ID. A 6-digit code will be sent to your email.
                 </p>
                 <div className="relative">
                   <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />

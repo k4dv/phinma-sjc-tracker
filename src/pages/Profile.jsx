@@ -349,7 +349,7 @@ export default function Profile({ user, onLogout, assignments = {} }) {
             </div>
             <div>
               <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wide">
-                Experience & Presentation Mode
+                Experience
               </h3>
               <p className="text-[10px] text-slate-400">
                 Control entrance animations and login curtain
@@ -369,7 +369,7 @@ export default function Profile({ user, onLogout, assignments = {} }) {
             >
               <div className="pr-3">
                 <span className="text-xs font-bold text-slate-800 block">
-                  {animationsEnabled ? 'Presentation Animations (ON)' : 'Fast Shift Mode (OFF)'}
+                  {animationsEnabled ? 'Animation & Effect (ON)' : 'Fast Shift Mode (OFF)'}
                 </span>
                 <span className="text-[10px] text-slate-500 block mt-0.5">
                   {animationsEnabled 

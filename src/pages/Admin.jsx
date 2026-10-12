@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { supabase } from '../data/supabaseClient';
 import { api } from '../services/api';
 import * as XLSX from 'xlsx';
@@ -13,17 +14,21 @@ import {
   Plus, 
   Download, 
   ChevronDown, 
-  Check
+  Check, 
+  UserPlus, 
+  UserMinus, 
+  Shield, 
+  X, 
+  Lock 
 } from 'lucide-react';
 
-// SJC Custodial Team Roster
-const OFFICIAL_STAFF_ROSTER = [
-  { id: '001', name: 'Kuya Bert', role: 'Staff' },
-  { id: '002', name: 'Ate Linda', role: 'Staff' },
-  { id: '003', name: 'Kuya Jun', role: 'Staff' },
-  { id: '004', name: 'Ate Marites', role: 'Staff' },
-  { id: '005', name: 'Kuya Jomar', role: 'Staff' },
-  { id: 'admin', name: 'Staff', role: 'Staff' }
+const FALLBACK_ROSTER = [
+  { id: '001', name: 'Kuya Bert', role: 'staff', access_level: 1, email: 'vhma.nacion.sjc@phinmaed.com' },
+  { id: '002', name: 'Ate Linda', role: 'staff', access_level: 1, email: 'cami.ubuwon.sjc@phinmaed.com' },
+  { id: '003', name: 'Kuya Jun', role: 'staff', access_level: 1, email: 'anco.alfanta.sjc@phinmaed.com' },
+  { id: '004', name: 'Ate Marites', role: 'staff', access_level: 1, email: 'rade.copones.sjc@phinmaed.com' },
+  { id: '005', name: 'Kuya Jomar', role: 'staff', access_level: 1, email: 'vhma.nacion.sjc@phinmaed.com' },
+  { id: 'admin', name: 'System Administrator', role: 'admin', access_level: 2, email: 'vhma.nacion.sjc@phinmaed.com' }
 ];
 
 const ADMIN_TABS = [
@@ -49,9 +54,25 @@ export default function Admin({
   const [toastMessage, setToastMessage] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
 
-  // Dropdown accordion state
+  // Staff list state (loaded dynamically from database)
+  const [staffRoster, setStaffRoster] = useState(FALLBACK_ROSTER);
   const [showStaffDropdown, setShowStaffDropdown] = useState(false);
   const [staffAvatars, setStaffAvatars] = useState({});
+
+  // Account Creation Modal State
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [newUserId, setNewUserId] = useState('');
+  const [newUserName, setNewUserName] = useState('');
+  const [newUserEmail, setNewUserEmail] = useState('');
+  const [newUserRole, setNewUserRole] = useState('staff');
+  const [newUserAccessLevel, setNewUserAccessLevel] = useState(1);
+  const [adminSecretPasscode, setAdminSecretPasscode] = useState('');
+  const [isCreatingAccount, setIsCreatingAccount] = useState(false);
+
+  // Account Deletion Modal State
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [selectedUserToDelete, setSelectedUserToDelete] = useState('');
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
 
   // Check animation preferences
   const animationsDisabled = localStorage.getItem('sjc_animations_disabled') === 'true';
@@ -72,45 +93,236 @@ export default function Admin({
 
   const showToast = (msg) => {
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(''), 3500);
+    setTimeout(() => setToastMessage(''), 3000);
   };
 
   const showError = (msg) => {
     setErrorMessage(msg);
-    setTimeout(() => setErrorMessage(''), 4000);
+    setTimeout(() => setErrorMessage(''), 3500);
   };
 
-  // Load avatars from localStorage and Supabase
-  useEffect(() => {
-    const fetchAvatars = async () => {
+  // Helper to resolve clean staff names
+  const getStaffName = (staffObj) => {
+    if (!staffObj) return 'Unassigned';
+    if (staffObj.name && staffObj.name !== 'Staff Member') return staffObj.name;
+    const fallback = FALLBACK_ROSTER.find((f) => f.id === staffObj.id);
+    return fallback ? fallback.name : (staffObj.name || `Staff ${staffObj.id}`);
+  };
+
+  // Fetch users from database & initialize avatars
+  const fetchUsersAndAvatars = async () => {
+    try {
+      const users = await api.getUsers();
+      if (users && users.length > 0) {
+        setStaffRoster(users);
+      }
+    } catch {
+      try {
+        const { data } = await supabase.from('profiles').select('*').order('id', { ascending: true });
+        if (data && data.length > 0) {
+          setStaffRoster(data);
+        }
+      } catch (err) {
+        console.error('Failed to load user roster:', err);
+      }
+    }
+
+    try {
       const localMap = {};
-      OFFICIAL_STAFF_ROSTER.forEach((member) => {
+      FALLBACK_ROSTER.forEach((member) => {
         const local = localStorage.getItem(`sjc_avatar_${member.id}`);
         if (local) localMap[member.id] = local;
       });
-      setStaffAvatars(localMap);
 
-      try {
-        const { data, error } = await supabase.from('profiles').select('id, avatar');
-        if (!error && data) {
-          const cloudMap = { ...localMap };
-          data.forEach((item) => {
-            if (item.avatar) {
-              cloudMap[item.id] = item.avatar;
-              localStorage.setItem(`sjc_avatar_${item.id}`, item.avatar);
-            }
-          });
-          setStaffAvatars(cloudMap);
-        }
-      } catch (err) {
-        console.error('Failed to load roster avatars:', err);
+      const { data, error } = await supabase.from('profiles').select('id, avatar');
+      if (!error && data) {
+        const cloudMap = { ...localMap };
+        data.forEach((item) => {
+          if (item.avatar) {
+            cloudMap[item.id] = item.avatar;
+            localStorage.setItem(`sjc_avatar_${item.id}`, item.avatar);
+          }
+        });
+        setStaffAvatars(cloudMap);
+      } else {
+        setStaffAvatars(localMap);
       }
-    };
+    } catch (err) {
+      console.error('Failed to load avatars:', err);
+    }
+  };
 
-    fetchAvatars();
+  useEffect(() => {
+    fetchUsersAndAvatars();
   }, []);
 
-  // 1. Notice Broadcast Handlers
+  // 1. User Account Creation Handler
+  const handleCreateAccount = async (e) => {
+    e.preventDefault();
+    if (!newUserId.trim() || !newUserName.trim() || !newUserEmail.trim()) {
+      showError('Please provide Staff ID, Full Name, and Email.');
+      return;
+    }
+
+    if (newUserRole === 'admin') {
+      if (adminSecretPasscode.trim() !== 'idiot123') {
+        showError('Unauthorized: Incorrect supervisor secret password.');
+        return;
+      }
+    }
+
+    setIsCreatingAccount(true);
+
+    const payload = {
+      id: newUserId.trim(),
+      name: newUserName.trim(),
+      email: newUserEmail.trim(),
+      role: newUserRole,
+      access_level: Number(newUserAccessLevel),
+      temporaryPassword: 'sjc1234'
+    };
+
+    try {
+      const res = await api.createUser(payload);
+      const createdUser = res.data || payload;
+
+      setStaffRoster((prev) => [...prev, createdUser]);
+      showToast(`Account created for ${payload.name}!`);
+      setNewUserId('');
+      setNewUserName('');
+      setNewUserEmail('');
+      setNewUserRole('staff');
+      setNewUserAccessLevel(1);
+      setAdminSecretPasscode('');
+      setShowCreateModal(false);
+    } catch (err) {
+      console.warn('API error, attempting direct Supabase fallback:', err);
+      try {
+        const { data, error } = await supabase.from('profiles').insert([{
+          id: payload.id,
+          name: payload.name,
+          email: payload.email,
+          role: payload.role,
+          access_level: payload.access_level,
+          password: 'sjc1234',
+          is_first_login: true
+        }]).select();
+
+        if (error) throw error;
+        if (data && data[0]) {
+          setStaffRoster((prev) => [...prev, data[0]]);
+        }
+        showToast(`Account created for ${payload.name}!`);
+        setNewUserId('');
+        setNewUserName('');
+        setNewUserEmail('');
+        setAdminSecretPasscode('');
+        setShowCreateModal(false);
+      } catch (fallbackErr) {
+        console.error('Failed to create account:', fallbackErr);
+        showError(fallbackErr.message || 'Error creating account. ID might already exist.');
+      }
+    } finally {
+      setIsCreatingAccount(false);
+    }
+  };
+
+  // 2. User Account Deletion Handler with Assignment Cleanup
+  const handleDeleteAccount = async () => {
+    if (!selectedUserToDelete) return;
+    setIsDeletingAccount(true);
+
+    const targetId = selectedUserToDelete;
+    const targetUser = staffRoster.find((s) => s.id === targetId);
+    const targetName = getStaffName(targetUser);
+
+    try {
+      const { error: deleteErr } = await supabase
+        .from('profiles')
+        .delete()
+        .eq('id', targetId);
+
+      if (deleteErr) throw deleteErr;
+
+      // Identify floors assigned to this user
+      const affectedFloors = Object.entries(assignments)
+        .filter(([_, id]) => id === targetId)
+        .map(([floor]) => Number(floor));
+
+      if (affectedFloors.length > 0) {
+        const updatedAssignments = { ...assignments };
+        affectedFloors.forEach((f) => {
+          delete updatedAssignments[f];
+        });
+        if (setAssignments) setAssignments(updatedAssignments);
+
+        await supabase.from('assignments').delete().eq('staff_id', targetId);
+
+        if (setRooms) {
+          setRooms((prev) =>
+            prev.map((r) =>
+              affectedFloors.includes(Number(r.floor))
+                ? { ...r, staff: 'Unassigned' }
+                : r
+            )
+          );
+        }
+
+        for (const f of affectedFloors) {
+          await supabase.from('rooms').update({ staff: 'Unassigned' }).eq('floor', f);
+        }
+      }
+
+      setStaffRoster((prev) => prev.filter((s) => s.id !== targetId));
+      showToast(`Account for ${targetName} was deleted.`);
+      setShowDeleteModal(false);
+      setSelectedUserToDelete('');
+    } catch (err) {
+      console.error('Failed to delete user:', err);
+      showError(err.message || 'Failed to delete user account.');
+    } finally {
+      setIsDeletingAccount(false);
+    }
+  };
+
+  // 3. Floor Assignment Handler (Synchronized with Rooms State & Supabase)
+  const handleAssignFloor = async (floorNum, staffId) => {
+    const staffObj = staffRoster.find((s) => s.id === staffId);
+    const staffName = staffId ? getStaffName(staffObj) : 'Unassigned';
+
+    const nextMap = { ...assignments, [floorNum]: staffId };
+    if (setAssignments) setAssignments(nextMap);
+
+    if (setRooms) {
+      setRooms((prev) =>
+        prev.map((r) =>
+          Number(r.floor) === Number(floorNum)
+            ? { ...r, staff: staffName }
+            : r
+        )
+      );
+    }
+
+    try {
+      if (staffId) {
+        await supabase.from('assignments').upsert({ floor: floorNum, staff_id: staffId });
+      } else {
+        await supabase.from('assignments').delete().eq('floor', floorNum);
+      }
+
+      await supabase
+        .from('rooms')
+        .update({ staff: staffName })
+        .eq('floor', floorNum);
+
+      showToast(`Floor ${floorNum} assigned to ${staffName}.`);
+    } catch (err) {
+      console.error('Failed to save assignment:', err);
+      showError('Database error updating floor assignment.');
+    }
+  };
+
+  // 4. Notice Broadcast Handlers
   const handleSaveBroadcast = async (e) => {
     e.preventDefault();
     if (!noticeText.trim()) return;
@@ -137,7 +349,7 @@ export default function Admin({
       showToast('Supervisor announcement broadcasted live across campus!');
     } catch (err) {
       console.error('Broadcast failed:', err);
-      showError('Failed to publish announcement to Supabase.');
+      showError('Failed to publish announcement.');
     } finally {
       setIsUpdatingNotice(false);
     }
@@ -157,23 +369,7 @@ export default function Admin({
     }
   };
 
-  // 2. Floor Assignment Handler
-  const handleAssignFloor = async (floorNum, staffId) => {
-    const nextMap = { ...assignments, [floorNum]: staffId };
-    if (setAssignments) setAssignments(nextMap);
-
-    try {
-      await supabase.from('assignments').upsert({ floor: floorNum, staff_id: staffId });
-      const staffObj = OFFICIAL_STAFF_ROSTER.find((s) => s.id === staffId);
-      const name = staffObj ? staffObj.name : 'Unassigned';
-      showToast(`Floor ${floorNum} assigned to ${name}.`);
-    } catch (err) {
-      console.error('Failed to save assignment:', err);
-      showError('Database error updating floor assignment.');
-    }
-  };
-
-  // 3. Supply Inventory Handlers (Connected to Express API)
+  // 5. Supply Inventory Handlers
   const handleAddSupplyItem = async (e) => {
     e.preventDefault();
     if (!newItemName.trim()) return;
@@ -191,7 +387,6 @@ export default function Admin({
     };
 
     try {
-      // POST /api/supplies via Express Controller & Model
       const res = await api.addSupply(newSupplyObj);
       const createdItem = res.data || res;
 
@@ -200,9 +395,9 @@ export default function Admin({
       }
       setNewItemName('');
       setNewItemQty('');
-      showToast(`Added ${newSupplyObj.name} via Express Backend!`);
+      showToast(`Added ${newSupplyObj.name} to storage!`);
     } catch (err) {
-      console.warn('Express API unavailable, fallback to Supabase:', err);
+      console.warn('Express API error, falling back to direct Supabase:', err);
       try {
         const { data, error } = await supabase.from('supplies').insert([newSupplyObj]).select();
         if (error) throw error;
@@ -211,7 +406,7 @@ export default function Admin({
         }
         setNewItemName('');
         setNewItemQty('');
-        showToast(`Added ${newSupplyObj.name} to central storage.`);
+        showToast(`Added ${newSupplyObj.name} to storage!`);
       } catch (fallbackErr) {
         console.error('Failed to add supply:', fallbackErr);
         showError('Could not save new inventory item.');
@@ -234,7 +429,6 @@ export default function Admin({
     }
 
     try {
-      // PUT /api/supplies/:id via Express
       await api.updateSupplyQty(supplyId, updatedQty);
     } catch (err) {
       console.warn('Express update failed, fallback to Supabase:', err);
@@ -254,9 +448,8 @@ export default function Admin({
     }
 
     try {
-      // DELETE /api/supplies/:id via Express
       await api.deleteSupply(supplyId);
-      showToast(`Removed "${name}" from stock records via Express.`);
+      showToast(`Removed "${name}" from stock records.`);
     } catch (err) {
       console.warn('Express delete failed, fallback to Supabase:', err);
       try {
@@ -269,7 +462,7 @@ export default function Admin({
     }
   };
 
-  // 4. Shift Operations & Reset
+  // 6. Shift Operations & Reset
   const handleResetDay = async () => {
     if (!window.confirm('Reset all 35 classrooms back to "Pending" for the new shift?')) return;
 
@@ -360,19 +553,26 @@ export default function Admin({
   return (
     <div className="p-4 space-y-3.5 pb-28 text-slate-800">
       
-      {/* Toast Alerts */}
-      {toastMessage && (
-        <div className="p-3 bg-emerald-50 border border-emerald-300 text-emerald-800 text-xs font-semibold rounded-2xl flex items-center gap-2 animate-pop shadow-xs">
-          <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
-          <span>{toastMessage}</span>
-        </div>
+      {/* Floating Top Green Alert Notification */}
+      {toastMessage && createPortal(
+        <div className="fixed top-20 inset-x-0 z-[150] max-w-md mx-auto px-4 pointer-events-none animate-toast select-none">
+          <div className="pointer-events-auto p-3 bg-emerald-50/95 backdrop-blur-sm border border-emerald-300 text-emerald-800 text-xs font-semibold rounded-2xl flex items-center gap-2.5 shadow-xl">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+            <span className="flex-1 font-medium">{toastMessage}</span>
+          </div>
+        </div>,
+        document.body
       )}
 
-      {errorMessage && (
-        <div className="p-3 bg-rose-50 border border-rose-300 text-rose-800 text-xs font-semibold rounded-2xl flex items-center gap-2 animate-shake shadow-xs">
-          <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
-          <span>{errorMessage}</span>
-        </div>
+      {/* Floating Top Error Alert Notification */}
+      {errorMessage && createPortal(
+        <div className="fixed top-20 inset-x-0 z-[150] max-w-md mx-auto px-4 pointer-events-none animate-toast select-none">
+          <div className="pointer-events-auto p-3 bg-rose-50/95 backdrop-blur-sm border border-rose-300 text-rose-800 text-xs font-semibold rounded-2xl flex items-center gap-2.5 shadow-xl animate-shake">
+            <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
+            <span className="flex-1 font-medium">{errorMessage}</span>
+          </div>
+        </div>,
+        document.body
       )}
 
       {/* Admin Header */}
@@ -413,12 +613,34 @@ export default function Admin({
         ))}
       </div>
 
-      {/* Tab Content */}
+      {/* TAB CONTENT AREA */}
       <div key={activeTab} className={!animationsDisabled ? 'animate-fade' : ''}>
         
         {/* TAB 1: STAFF */}
         {activeTab === 'staff' && (
           <div className="space-y-3.5">
+            {/* Action Bar: Create Account on Far Left, Delete Account on Far Right */}
+            <div className="flex items-center justify-between w-full">
+              <button
+                type="button"
+                onClick={() => setShowCreateModal(true)}
+                className="flex items-center gap-1.5 px-3.5 py-2.5 bg-[#176e57] hover:bg-[#135c49] active:scale-95 text-white font-bold text-xs rounded-2xl shadow-xs transition"
+              >
+                <UserPlus className="w-4 h-4" />
+                <span>Create Account</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowDeleteModal(true)}
+                className="p-2.5 bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 active:scale-95 rounded-2xl shadow-xs transition"
+                title="Delete Staff Account"
+              >
+                <UserMinus className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Collapsible Staff Dropdown */}
             <div className="bg-white rounded-3xl border border-slate-100 shadow-[0_2px_8px_rgba(0,0,0,0.02)] overflow-hidden">
               <button
                 type="button"
@@ -432,7 +654,7 @@ export default function Admin({
                   <div>
                     <div className="flex items-center gap-2">
                       <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wide">
-                        Staff
+                        Staff Roster ({staffRoster.length})
                       </h3>
                       <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
                         <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
@@ -440,7 +662,7 @@ export default function Admin({
                       </span>
                     </div>
                     <p className="text-[10px] text-slate-400">
-                      Tap to view active roster and shift presence
+                      Tap to view registered staff and live presence
                     </p>
                   </div>
                 </div>
@@ -456,9 +678,10 @@ export default function Admin({
                 <div className={`px-4 pb-3.5 pt-1 border-t border-slate-100 space-y-1.5 ${
                   !animationsDisabled ? 'animate-dropdown' : ''
                 }`}>
-                  {OFFICIAL_STAFF_ROSTER.map((member) => {
+                  {staffRoster.map((member) => {
                     const isOnline = onlineUsers.some((u) => String(u.id) === String(member.id));
                     const memberAvatar = staffAvatars[member.id];
+                    const memberName = getStaffName(member);
                     const assignedFloors = Object.entries(assignments)
                       .filter(([_, id]) => id === member.id)
                       .map(([f]) => `F${f}`)
@@ -475,11 +698,11 @@ export default function Admin({
                               {memberAvatar ? (
                                 <img
                                   src={memberAvatar}
-                                  alt={member.name}
+                                  alt={memberName}
                                   className="w-full h-full object-cover"
                                 />
                               ) : (
-                                <span>{member.name[0]}</span>
+                                <span>{memberName[0]}</span>
                               )}
                             </div>
                             <span className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border-2 border-white ${
@@ -488,12 +711,24 @@ export default function Admin({
                           </div>
 
                           <div>
-                            <span className="font-bold text-slate-800 block leading-tight">
-                              {member.name}
-                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-bold text-slate-800 block leading-tight">
+                                {memberName}
+                              </span>
+                              {member.role === 'admin' && (
+                                <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-md bg-rose-100 text-rose-700">
+                                  Admin
+                                </span>
+                              )}
+                            </div>
                             <span className="text-[10px] text-slate-400 font-mono">
-                              ID: {member.id}
+                              ID: {member.id} &bull; Lvl {member.access_level || 1}
                             </span>
+                            {member.email && (
+                              <span className="text-[9px] text-slate-400 block truncate max-w-[160px]">
+                                {member.email}
+                              </span>
+                            )}
                           </div>
                         </div>
 
@@ -521,7 +756,7 @@ export default function Admin({
                   Floor Assignment Matrix
                 </h3>
                 <p className="text-[10px] text-slate-400">
-                  Designate primary custodial personnel for Floors 1 to 7
+                  Designate primary personnel for Floors 1 to 7
                 </p>
               </div>
 
@@ -543,16 +778,16 @@ export default function Admin({
                         </span>
                       </div>
 
-                      <div className="flex-1 max-w-[190px]">
+                      <div className="flex-1 max-w-[210px]">
                         <select
                           value={currentStaffId}
                           onChange={(e) => handleAssignFloor(floorNum, e.target.value)}
                           className="w-full py-1.5 px-2.5 bg-white border border-slate-300 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:border-[#176e57] shadow-2xs"
                         >
-                          <option value="">-- Unassigned --</option>
-                          {OFFICIAL_STAFF_ROSTER.map((staff) => (
+                          <option value="">Unassigned</option>
+                          {staffRoster.map((staff) => (
                             <option key={staff.id} value={staff.id}>
-                              {staff.name} ({staff.id})
+                              {getStaffName(staff)} ({staff.id})
                             </option>
                           ))}
                         </select>
@@ -592,7 +827,7 @@ export default function Admin({
                   required
                   value={noticeText}
                   onChange={(e) => setNoticeText(e.target.value)}
-                  placeholder="e.g. Executive inspection on 4th floor at 1:30 PM. Ensure halls are clear."
+                  placeholder="Executive inspection on 4th floor at 1:30 PM. Ensure halls are clear."
                   className="w-full p-2.5 text-xs border border-slate-200 rounded-xl focus:outline-none focus:border-[#176e57] bg-slate-50 text-slate-800 resize-none"
                 />
               </div>
@@ -646,7 +881,7 @@ export default function Admin({
                     Add Supply to Inventory
                   </h3>
                   <p className="text-[10px] text-slate-400">
-                    Register custodial items to central storage
+                    Register items to central storage
                   </p>
                 </div>
               </div>
@@ -661,7 +896,7 @@ export default function Admin({
                     required
                     value={newItemName}
                     onChange={(e) => setNewItemName(e.target.value)}
-                    placeholder="e.g. Mop Heads, Disinfectant, Bond Paper"
+                    placeholder="Mop Heads, Disinfectant, Bond Paper"
                     className="w-full p-2 border border-slate-200 rounded-xl bg-slate-50 focus:outline-none focus:border-[#176e57]"
                   />
                 </div>
@@ -711,7 +946,7 @@ export default function Admin({
                       required
                       value={newItemQty}
                       onChange={(e) => setNewItemQty(e.target.value)}
-                      placeholder="e.g. 10"
+                      placeholder="10"
                       className="w-full p-2 border border-slate-200 rounded-xl bg-slate-50 focus:outline-none focus:border-[#176e57]"
                     />
                   </div>
@@ -726,7 +961,7 @@ export default function Admin({
                       required
                       value={newItemThreshold}
                       onChange={(e) => setNewItemThreshold(e.target.value)}
-                      placeholder="e.g. 3"
+                      placeholder="3"
                       className="w-full p-2 border border-slate-200 rounded-xl bg-slate-50 focus:outline-none focus:border-[#176e57]"
                     />
                   </div>
@@ -816,7 +1051,7 @@ export default function Admin({
                 Shift Operations & Data Export
               </h3>
               <p className="text-[10px] text-slate-400">
-                Campus inspection reset and formal facilities reports
+                Inspection reset and formal facilities reports
               </p>
             </div>
 
@@ -876,6 +1111,265 @@ export default function Admin({
         )}
 
       </div>
+
+      {/* CREATE ACCOUNT MODAL */}
+      {showCreateModal && typeof document !== 'undefined' && createPortal(
+        <div 
+          className="fixed inset-0 z-[100] bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-backdrop select-none"
+          onClick={() => setShowCreateModal(false)}
+        >
+          <div 
+            className="bg-white w-full max-w-sm rounded-3xl p-5 shadow-2xl border border-slate-100 space-y-3.5 animate-sheet-up overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 bg-emerald-50 text-[#176e57] rounded-lg">
+                  <Shield className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800">
+                    Create New Account
+                  </h3>
+                  <p className="text-[10px] text-slate-400">
+                    Register a new staff or admin user
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCreateModal(false)}
+                className="p-1 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateAccount} className="space-y-3 text-xs">
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
+                  Staff ID:
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={newUserId}
+                  onChange={(e) => setNewUserId(e.target.value)}
+                  placeholder="ID"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-slate-50 focus:outline-none focus:border-[#176e57] font-semibold"
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
+                  Full Name:
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={newUserName}
+                  onChange={(e) => setNewUserName(e.target.value)}
+                  placeholder="Full Name"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-slate-50 focus:outline-none focus:border-[#176e57] font-semibold"
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
+                  Email Address:
+                </label>
+                <input
+                  type="email"
+                  required
+                  value={newUserEmail}
+                  onChange={(e) => setNewUserEmail(e.target.value)}
+                  placeholder="name.surname.sjc@phinmaed.com"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-slate-50 focus:outline-none focus:border-[#176e57] font-semibold"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
+                    System Role:
+                  </label>
+                  <select
+                    value={newUserRole}
+                    onChange={(e) => {
+                      const role = e.target.value;
+                      setNewUserRole(role);
+                      setNewUserAccessLevel(role === 'admin' ? 2 : 1);
+                      if (role !== 'admin') setAdminSecretPasscode('');
+                    }}
+                    className="w-full px-2.5 py-2 border border-slate-200 rounded-xl bg-slate-50 font-semibold focus:outline-none focus:border-[#176e57]"
+                  >
+                    <option value="staff">Staff (Field)</option>
+                    <option value="admin">Admin (Supervisor)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
+                    Access Level:
+                  </label>
+                  <select
+                    value={newUserAccessLevel}
+                    onChange={(e) => setNewUserAccessLevel(Number(e.target.value))}
+                    className="w-full px-2.5 py-2 border border-slate-200 rounded-xl bg-slate-50 font-semibold focus:outline-none focus:border-[#176e57]"
+                  >
+                    <option value={1}>Level 1 (Field)</option>
+                    <option value={2}>Level 2 (Supervisor)</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Secret Authorization Key Prompt for Admin Role */}
+              {newUserRole === 'admin' && (
+                <div className="p-2.5 bg-rose-50/80 border border-rose-200 rounded-2xl space-y-1.5 animate-pop">
+                  <div className="flex items-center gap-1.5 text-rose-800">
+                    <Lock className="w-3.5 h-3.5 flex-shrink-0" />
+                    <label className="text-[10px] font-bold uppercase tracking-wider">
+                      Supervisor Security Key:
+                    </label>
+                  </div>
+                  <input
+                    type="password"
+                    required
+                    value={adminSecretPasscode}
+                    onChange={(e) => setAdminSecretPasscode(e.target.value)}
+                    placeholder="Enter secret passcode to grant admin"
+                    className="w-full px-2.5 py-1.5 border border-rose-300 rounded-xl bg-white text-slate-800 focus:outline-none focus:border-rose-600 font-mono text-xs"
+                  />
+                  <p className="text-[9px] text-rose-600">
+                    Granting supervisor admin access requires authorization.
+                  </p>
+                </div>
+              )}
+
+              <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl space-y-0.5">
+                <span className="text-[10px] font-bold text-slate-600 block">Default Credentials:</span>
+                <p className="text-[10px] text-slate-500">
+                  Temporary password: <code className="font-mono font-bold text-emerald-800">sjc1234</code>
+                </p>
+                <p className="text-[9px] text-slate-400">
+                  User will be forced to change this password on their first login.
+                </p>
+              </div>
+
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateModal(false)}
+                  className="py-2.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl active:scale-95 transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isCreatingAccount}
+                  className="flex-1 py-2.5 bg-[#176e57] hover:bg-[#135c49] active:scale-95 text-white font-bold rounded-xl shadow-xs transition disabled:opacity-50"
+                >
+                  {isCreatingAccount ? 'Registering...' : 'Create Account'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* DELETE ACCOUNT MODAL */}
+      {showDeleteModal && typeof document !== 'undefined' && createPortal(
+        <div 
+          className="fixed inset-0 z-[100] bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-backdrop select-none"
+          onClick={() => setShowDeleteModal(false)}
+        >
+          <div 
+            className="bg-white w-full max-w-sm rounded-3xl p-5 shadow-2xl border border-slate-100 space-y-3.5 animate-sheet-up overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 bg-rose-50 text-rose-600 rounded-lg">
+                  <Trash2 className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800">
+                    Delete Account
+                  </h3>
+                  <p className="text-[10px] text-slate-400">
+                    Permanently delete staff credentials
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowDeleteModal(false)}
+                className="p-1 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <p className="text-slate-600 leading-relaxed">
+                Select the staff account you wish to permanently remove from the system.
+              </p>
+
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
+                  Select Staff Account:
+                </label>
+                <select
+                  value={selectedUserToDelete}
+                  onChange={(e) => setSelectedUserToDelete(e.target.value)}
+                  className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50 font-semibold focus:outline-none focus:border-rose-500 text-slate-800"
+                >
+                  <option value="">Select Account</option>
+                  {staffRoster
+                    .filter((s) => s.id !== 'admin')
+                    .map((staff) => (
+                      <option key={staff.id} value={staff.id}>
+                        {getStaffName(staff)} (ID: {staff.id})
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              <div className="p-2.5 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl space-y-1">
+                <span className="text-[10px] font-bold block uppercase tracking-wider">
+                  Warning
+                </span>
+                <p className="text-[10px] leading-relaxed text-rose-700">
+                  Deleting this user will unassign them from any assigned floors and reset those classrooms back to Unassigned.
+                </p>
+              </div>
+
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowDeleteModal(false);
+                    setSelectedUserToDelete('');
+                  }}
+                  className="py-2.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl active:scale-95 transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={!selectedUserToDelete || isDeletingAccount}
+                  onClick={handleDeleteAccount}
+                  className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 active:scale-95 text-white font-bold rounded-xl shadow-xs transition disabled:opacity-50"
+                >
+                  {isDeletingAccount ? 'Deleting...' : 'Confirm & Delete'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
 
     </div>
   );

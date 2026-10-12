@@ -90,7 +90,6 @@ export default function App() {
   useEffect(() => {
     const fetchInitialData = async () => {
       try {
-        // Fetch Rooms & Supplies from the Node.js Express Backend
         const [backendRooms, backendSupplies, assignRes, broadRes, logsRes, reqsRes] = await Promise.all([
           api.getRooms().catch((err) => {
             console.warn('Express rooms API offline, falling back to Supabase client:', err);
@@ -322,7 +321,7 @@ export default function App() {
     };
   }, [user]);
 
-  // Measured Login Transition Sequence with Virtual Keyboard Dismissal
+  // Login Transition Sequence
   const handleLoginSuccess = (userData, remember) => {
     sessionStorage.removeItem('sjc_dash_animated');
 
@@ -592,6 +591,91 @@ export default function App() {
         onScanSuccess={handleGlobalScanSuccess}
         allRoomIds={allRoomIds}
       />
+
+      {/* First-Time Login Password Change Interceptor */}
+      {user?.is_first_login && (
+        <div className="fixed inset-0 z-[200] bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-6 max-w-sm w-full space-y-4 shadow-2xl border border-slate-100 animate-pop">
+            <div>
+              <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 uppercase tracking-wider">
+                Account Setup Required
+              </span>
+              <h3 className="font-extrabold text-slate-900 text-base mt-1.5">
+                First-Time Sign In
+              </h3>
+              <p className="text-xs text-slate-500 mt-1">
+                Welcome to SJC Dimasalang Tracker! Please confirm your name and set a new password before continuing.
+              </p>
+            </div>
+
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                const formData = new FormData(e.currentTarget);
+                const updatedName = formData.get('fullName')?.toString().trim();
+                const newPassword = formData.get('newPass')?.toString();
+
+                if (!newPassword || newPassword.length < 6) {
+                  alert('Password must be at least 6 characters long.');
+                  return;
+                }
+
+                try {
+                  await api.completeFirstLogin(user.id, { newPassword, updatedName });
+                  const updatedUser = { 
+                    ...user, 
+                    name: updatedName || user.name, 
+                    is_first_login: false 
+                  };
+                  setUser(updatedUser);
+                  if (localStorage.getItem('sjc_active_user')) {
+                    localStorage.setItem('sjc_active_user', JSON.stringify(updatedUser));
+                  } else {
+                    sessionStorage.setItem('sjc_active_user', JSON.stringify(updatedUser));
+                  }
+                } catch (err) {
+                  alert(err.message || 'Failed to update credentials.');
+                }
+              }}
+              className="space-y-3 text-xs"
+            >
+              <div>
+                <label className="text-[10px] font-bold text-slate-600 uppercase block mb-1">
+                  Full Name:
+                </label>
+                <input
+                  name="fullName"
+                  type="text"
+                  required
+                  defaultValue={user.name && user.name !== 'Staff Member' ? user.name : ''}
+                  placeholder="e.g. Kuya Bert"
+                  className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50 focus:outline-none focus:border-[#176e57]"
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold text-slate-600 uppercase block mb-1">
+                  New Password (min 6 chars):
+                </label>
+                <input
+                  name="newPass"
+                  type="password"
+                  required
+                  placeholder="Enter personal password"
+                  className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50 focus:outline-none focus:border-[#176e57]"
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="w-full py-2.5 bg-[#176e57] hover:bg-[#135c49] text-white font-bold rounded-xl shadow-xs transition"
+              >
+                Save & Unlock Account
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
 
       {user && !isPublicPage && <Navbar user={user} />}
     </div>
