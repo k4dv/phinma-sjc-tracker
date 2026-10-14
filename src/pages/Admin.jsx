@@ -93,7 +93,7 @@ export default function Admin({
 
   const showToast = (msg) => {
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(''), 3000);
+    setTimeout(() => setToastMessage(''), 3500);
   };
 
   const showError = (msg) => {
@@ -227,7 +227,7 @@ export default function Admin({
     }
   };
 
-  // 2. User Account Deletion Handler with Assignment Cleanup
+  // 2. User Account Deletion Handler with Cascading Assignment Cleanup
   const handleDeleteAccount = async () => {
     if (!selectedUserToDelete) return;
     setIsDeletingAccount(true);
@@ -244,7 +244,6 @@ export default function Admin({
 
       if (deleteErr) throw deleteErr;
 
-      // Identify floors assigned to this user
       const affectedFloors = Object.entries(assignments)
         .filter(([_, id]) => id === targetId)
         .map(([floor]) => Number(floor));
@@ -553,9 +552,34 @@ export default function Admin({
   return (
     <div className="p-4 space-y-3.5 pb-28 text-slate-800">
       
+      {/* Toast Keyframe Styles */}
+      <style>{`
+        @keyframes toastFadeInOut {
+          0% {
+            opacity: 0;
+            transform: translateY(-12px) scale(0.96);
+          }
+          10% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+          85% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+          100% {
+            opacity: 0;
+            transform: translateY(-8px) scale(0.97);
+          }
+        }
+        .animate-toast-smooth {
+          animation: toastFadeInOut 3.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+      `}</style>
+
       {/* Floating Top Green Alert Notification */}
-      {toastMessage && createPortal(
-        <div className="fixed top-20 inset-x-0 z-[150] max-w-md mx-auto px-4 pointer-events-none animate-toast select-none">
+      {toastMessage && typeof document !== 'undefined' && createPortal(
+        <div className="fixed top-20 inset-x-0 z-[150] max-w-sm mx-auto px-4 pointer-events-none animate-toast-smooth select-none">
           <div className="pointer-events-auto p-3 bg-emerald-50/95 backdrop-blur-sm border border-emerald-300 text-emerald-800 text-xs font-semibold rounded-2xl flex items-center gap-2.5 shadow-xl">
             <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
             <span className="flex-1 font-medium">{toastMessage}</span>
@@ -565,9 +589,9 @@ export default function Admin({
       )}
 
       {/* Floating Top Error Alert Notification */}
-      {errorMessage && createPortal(
-        <div className="fixed top-20 inset-x-0 z-[150] max-w-md mx-auto px-4 pointer-events-none animate-toast select-none">
-          <div className="pointer-events-auto p-3 bg-rose-50/95 backdrop-blur-sm border border-rose-300 text-rose-800 text-xs font-semibold rounded-2xl flex items-center gap-2.5 shadow-xl animate-shake">
+      {errorMessage && typeof document !== 'undefined' && createPortal(
+        <div className="fixed top-20 inset-x-0 z-[150] max-w-sm mx-auto px-4 pointer-events-none animate-toast-smooth select-none">
+          <div className="pointer-events-auto p-3 bg-rose-50/95 backdrop-blur-sm border border-rose-300 text-rose-800 text-xs font-semibold rounded-2xl flex items-center gap-2.5 shadow-xl">
             <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
             <span className="flex-1 font-medium">{errorMessage}</span>
           </div>
@@ -619,7 +643,7 @@ export default function Admin({
         {/* TAB 1: STAFF */}
         {activeTab === 'staff' && (
           <div className="space-y-3.5">
-            {/* Action Bar: Create Account on Far Left, Delete Account on Far Right */}
+            {/* Action Bar */}
             <div className="flex items-center justify-between w-full">
               <button
                 type="button"
@@ -654,7 +678,7 @@ export default function Admin({
                   <div>
                     <div className="flex items-center gap-2">
                       <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wide">
-                        Staff ({staffRoster.length})
+                        Staff Roster ({staffRoster.length})
                       </h3>
                       <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
                         <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
@@ -1223,7 +1247,6 @@ export default function Admin({
                 </div>
               </div>
 
-              {/* Secret Authorization Key Prompt for Admin Role */}
               {newUserRole === 'admin' && (
                 <div className="p-2.5 bg-rose-50/80 border border-rose-200 rounded-2xl space-y-1.5 animate-pop">
                   <div className="flex items-center gap-1.5 text-rose-800">

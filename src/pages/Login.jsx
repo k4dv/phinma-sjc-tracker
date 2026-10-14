@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import sjcLogo from '../assets/Logo.jpg';
 import schoolBg from '../assets/School.jpg';
@@ -27,16 +28,19 @@ const EMAILJS_PUBLIC_KEY = 'SKoJDpKyhviN9MWEQ';
 
 // Fallback SJC Custodial Team Roster
 const OFFICIAL_STAFF_ROSTER = [
-  { id: '001', name: 'Kuya Bert', role: 'staff', access_level: 1 },
-  { id: '002', name: 'Ate Linda', role: 'staff', access_level: 1 },
-  { id: '003', name: 'Kuya Jun', role: 'staff', access_level: 1 },
-  { id: '004', name: 'Ate Marites', role: 'staff', access_level: 1 },
-  { id: '005', name: 'Kuya Jomar', role: 'staff', access_level: 1 },
-  { id: '06-2223-033162', name: 'Kuya Bert', role: 'staff', access_level: 1 }
+  { id: '001', name: 'Kuya Bert', role: 'staff', access_level: 1, email: 'vhma.nacion.sjc@phinmaed.com' },
+  { id: '002', name: 'Ate Linda', role: 'staff', access_level: 1, email: 'cami.ubuwon.sjc@phinmaed.com' },
+  { id: '003', name: 'Kuya Jun', role: 'staff', access_level: 1, email: 'anco.alfanta.sjc@phinmaed.com' },
+  { id: '004', name: 'Ate Marites', role: 'staff', access_level: 1, email: 'rade.copones.sjc@phinmaed.com' },
+  { id: '005', name: 'Kuya Jomar', role: 'staff', access_level: 1, email: 'vhma.nacion.sjc@phinmaed.com' },
+  { id: '06-2223-033162', name: 'Kuya Bert', role: 'staff', access_level: 1, email: 'vhma.nacion.sjc@phinmaed.com' }
 ];
 
-const getDestinationEmail = (accountId) => {
-  const id = String(accountId || '').trim();
+const getDestinationEmail = (userObjOrId) => {
+  if (typeof userObjOrId === 'object' && userObjOrId?.email) {
+    return userObjOrId.email;
+  }
+  const id = String(typeof userObjOrId === 'object' ? userObjOrId.id : userObjOrId || '').trim();
   if (id === '002' || id === '2' || id.endsWith('02')) {
     return 'cami.ubuwon.sjc@phinmaed.com';
   }
@@ -176,7 +180,7 @@ export default function Login({ onLoginSuccess }) {
       setPassword('');
       setTapCount(0);
       setShowAdminToast(true);
-      setTimeout(() => setShowAdminToast(false), 2800);
+      setTimeout(() => setShowAdminToast(false), 3800);
     } else {
       setTapCount(nextTaps);
     }
@@ -185,7 +189,7 @@ export default function Login({ onLoginSuccess }) {
   const dispatchOtp = async (userObj, targetEmailDisplay, isRecovery = false) => {
     const newOtp = Math.floor(100000 + Math.random() * 900000).toString();
     const currentTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const destinationEmail = getDestinationEmail(userObj.id);
+    const destinationEmail = userObj.email || getDestinationEmail(userObj);
 
     if (isRecovery) {
       setForgotOtp(newOtp);
@@ -216,7 +220,7 @@ export default function Login({ onLoginSuccess }) {
 
       if (response.ok && !isRecovery) {
         setEmailSentAlert(true);
-        setTimeout(() => setEmailSentAlert(false), 5000);
+        setTimeout(() => setEmailSentAlert(false), 4200);
       }
     } catch (err) {
       console.error('Failed to send verification email:', err);
@@ -226,7 +230,7 @@ export default function Login({ onLoginSuccess }) {
     }
   };
 
-  // Authenticate against database profiles table with offline resilience
+  // Authenticate against database profiles table
   const handlePasswordSubmit = async (e) => {
     e.preventDefault();
     setErrorMsg('');
@@ -242,7 +246,6 @@ export default function Login({ onLoginSuccess }) {
     const cleanInput = staffId.trim();
 
     try {
-      // 1. Primary check: Query real Supabase profiles table
       const { data: dbUser, error } = await supabase
         .from('profiles')
         .select('*')
@@ -261,6 +264,7 @@ export default function Login({ onLoginSuccess }) {
           const authenticatedUser = {
             id: dbUser.id,
             name: dbUser.name || (dbUser.role === 'admin' ? 'Facilities Supervisor' : 'Staff Member'),
+            email: dbUser.email || null,
             role: dbUser.role || (loginMode === 'admin' ? 'admin' : 'staff'),
             access_level: dbUser.access_level || (dbUser.role === 'admin' ? 2 : 1),
             is_first_login: Boolean(dbUser.is_first_login),
@@ -282,7 +286,7 @@ export default function Login({ onLoginSuccess }) {
       console.warn('Database auth connection failed, testing local fallback:', dbErr);
     }
 
-    // 2. Offline / Local fallback if Supabase is unreachable
+    // Offline / Local fallback if Supabase is unreachable
     let fallbackUser = null;
     if (loginMode === 'staff') {
       const foundStaff = OFFICIAL_STAFF_ROSTER.find(
@@ -327,14 +331,13 @@ export default function Login({ onLoginSuccess }) {
       localStorage.removeItem('sjc_remembered_staff_id');
     }
 
-    // Direct login if device is already trusted
     if (isDeviceTrustedForAccount(stagedUser.id)) {
       onLoginSuccess(stagedUser, rememberMe);
       return;
     }
 
-    const simulatedEmail = PHINMA_STAFF_EMAILS[stagedUser.id] || `${stagedUser.name.toLowerCase().replace(/\s+/g, '')}@phinmaed.com`;
-    const masked = maskEmail(simulatedEmail);
+    const targetEmail = stagedUser.email || PHINMA_STAFF_EMAILS[stagedUser.id] || `${stagedUser.name.toLowerCase().replace(/\s+/g, '')}@phinmaed.com`;
+    const masked = maskEmail(targetEmail);
 
     setPendingUser(stagedUser);
     setDisplayedMaskedEmail(masked);
@@ -343,19 +346,53 @@ export default function Login({ onLoginSuccess }) {
     setOtpError('');
     setResendTimer(30);
 
-    dispatchOtp(stagedUser, simulatedEmail, false);
+    dispatchOtp(stagedUser, targetEmail, false);
   };
 
+  // Handles single digit typing and mobile autofill multi-digit strings
   const handleOtpDigitChange = (index, value) => {
-    if (!/^\d*$/.test(value)) return;
+    const clean = value.replace(/\D/g, '');
+    if (!clean && value !== '') return;
+
+    if (clean.length > 1) {
+      const digits = clean.slice(0, 6);
+      const newOtp = ['', '', '', '', '', ''];
+      for (let i = 0; i < 6; i++) {
+        newOtp[i] = digits[i] || '';
+      }
+      setOtpInput(newOtp);
+      const focusIndex = Math.min(digits.length, 5);
+      const nextInput = document.getElementById(`otp-${focusIndex}`);
+      if (nextInput) nextInput.focus();
+      return;
+    }
+
     const newOtp = [...otpInput];
-    newOtp[index] = value.slice(-1);
+    newOtp[index] = clean.slice(-1);
     setOtpInput(newOtp);
 
-    if (value && index < 5) {
+    if (clean && index < 5) {
       const nextInput = document.getElementById(`otp-${index + 1}`);
       if (nextInput) nextInput.focus();
     }
+  };
+
+  // Dedicated paste handler to distribute across all 6 inputs
+  const handleOtpPaste = (e) => {
+    e.preventDefault();
+    const pasteData = e.clipboardData.getData('text');
+    const cleanDigits = pasteData.replace(/\D/g, '').slice(0, 6);
+    if (!cleanDigits) return;
+
+    const newOtp = ['', '', '', '', '', ''];
+    for (let i = 0; i < 6; i++) {
+      newOtp[i] = cleanDigits[i] || '';
+    }
+    setOtpInput(newOtp);
+
+    const focusIndex = Math.min(cleanDigits.length, 5);
+    const targetInput = document.getElementById(`otp-${focusIndex}`);
+    if (targetInput) targetInput.focus();
   };
 
   const handleOtpKeyDown = (index, e) => {
@@ -421,7 +458,7 @@ export default function Login({ onLoginSuccess }) {
         .maybeSingle();
 
       if (dbUser) {
-        found = { id: dbUser.id, name: dbUser.name, role: dbUser.role };
+        found = { id: dbUser.id, name: dbUser.name, role: dbUser.role, email: dbUser.email };
       }
     } catch {
       // Fallback lookup
@@ -429,7 +466,7 @@ export default function Login({ onLoginSuccess }) {
 
     if (!found) {
       if (query.toLowerCase() === 'admin') {
-        found = { id: 'admin', name: 'Facilities Supervisor', role: 'admin' };
+        found = { id: 'admin', name: 'Facilities Supervisor', role: 'admin', email: 'vhma.nacion.sjc@phinmaed.com' };
       } else {
         found = OFFICIAL_STAFF_ROSTER.find(
           (s) => 
@@ -447,8 +484,8 @@ export default function Login({ onLoginSuccess }) {
     setForgotFoundUser(found);
     setForgotStep(2);
 
-    const simulatedEmail = PHINMA_STAFF_EMAILS[found.id] || `${found.name.toLowerCase().replace(/\s+/g, '')}@phinmaed.com`;
-    await dispatchOtp(found, simulatedEmail, true);
+    const targetEmail = found.email || PHINMA_STAFF_EMAILS[found.id] || `${found.name.toLowerCase().replace(/\s+/g, '')}@phinmaed.com`;
+    await dispatchOtp(found, targetEmail, true);
   };
 
   const handleVerifyRecoveryCode = (e) => {
@@ -493,7 +530,54 @@ export default function Login({ onLoginSuccess }) {
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col justify-between relative overflow-hidden font-sans">
       
-      {/* High-Definition School Photo Banner */}
+      {/* Toast Keyframes: Fade in from top, hold visibly, then gently dissolve up */}
+      <style>{`
+        @keyframes toastFadeInOut {
+          0% {
+            opacity: 0;
+            transform: translateY(-10px) scale(0.96);
+          }
+          10% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+          85% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+          100% {
+            opacity: 0;
+            transform: translateY(-8px) scale(0.97);
+          }
+        }
+        .animate-toast-smooth {
+          animation: toastFadeInOut 3.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+      `}</style>
+
+      {/* Floating 2FA Dispatched Toast (Positioned cleanly right below header curve) */}
+      {emailSentAlert && typeof document !== 'undefined' && createPortal(
+        <div className="fixed top-[215px] inset-x-0 z-[150] max-w-sm mx-auto px-4 pointer-events-none animate-toast-smooth select-none">
+          <div className="pointer-events-auto p-3 bg-emerald-50/95 backdrop-blur-sm border border-emerald-300 text-emerald-800 text-xs font-semibold rounded-2xl flex items-center gap-2.5 shadow-xl">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+            <span className="flex-1 font-medium">A 6-digit verification code has been dispatched to your school email!</span>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Floating Mode Switch Banner (Clean spacing above Sign In) */}
+      {showAdminToast && typeof document !== 'undefined' && createPortal(
+        <div className="fixed top-[220px] inset-x-0 z-[150] max-w-sm mx-auto px-4 pointer-events-none animate-toast-smooth select-none">
+          <div className="pointer-events-auto p-3 bg-amber-50/95 backdrop-blur-sm border border-amber-300 text-amber-900 text-xs font-semibold rounded-2xl flex items-center gap-2.5 shadow-xl">
+            <ShieldAlert className="w-4 h-4 text-amber-700 flex-shrink-0 animate-pop" />
+            <span className="flex-1 font-medium">Switched to {loginMode === 'admin' ? 'Admin Portal' : 'Staff Mode'}</span>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* School Header Banner */}
       <div className="relative text-white pt-10 pb-8 px-6 text-center shadow-lg rounded-b-[2.5rem] overflow-hidden bg-slate-900">
         <img
           src={schoolBg}
@@ -527,18 +611,11 @@ export default function Login({ onLoginSuccess }) {
         </div>
       </div>
 
-      {/* Main Login Form Screen */}
+      {/* Main Screen Content */}
       <div className="flex-1 flex flex-col justify-between">
         {!showTwoFactor ? (
-          <div className="flex-1 px-6 pt-5 pb-4">
-            
-            {showAdminToast && (
-              <div className="mb-4 p-3 bg-amber-50 border border-amber-300 text-amber-900 text-xs font-semibold rounded-xl flex items-center gap-2 animate-toast shadow-sm">
-                <ShieldAlert className="w-4 h-4 text-amber-700 flex-shrink-0 animate-pop" />
-                <span>Switched to {loginMode === 'admin' ? 'Admin Portal' : 'Staff Mode'}</span>
-              </div>
-            )}
-
+          /* Sign In Screen (pt-16 creates clean whitespace below the floating toast) */
+          <div className="flex-1 px-6 pt-16 pb-4">
             <div className="mb-5">
               <h2 className="text-xl font-bold text-slate-800">
                 {loginMode === 'staff' ? 'Sign In' : 'Admin Login'}
@@ -662,16 +739,9 @@ export default function Login({ onLoginSuccess }) {
             </form>
           </div>
         ) : (
-          /* 2FA Verification Screen */
-          <div className="flex-1 px-6 pt-5 pb-6 space-y-4 page-transition">
-            {emailSentAlert && (
-              <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-medium rounded-xl flex items-center gap-2 animate-toast shadow-sm">
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0 animate-pop" />
-                <span>A 6-digit verification code has been dispatched to your school email!</span>
-              </div>
-            )}
-
-            <div className="text-center space-y-1 pt-2">
+          /* 2FA Verification Screen (pt-16 aligns with the Sign In spacing) */
+          <div className="flex-1 px-6 pt-16 pb-6 space-y-4 page-transition">
+            <div className="text-center space-y-1">
               <div className="w-12 h-12 rounded-2xl bg-emerald-100 text-[#176e57] mx-auto flex items-center justify-center mb-2 animate-pop">
                 {isSendingEmail ? (
                   <Loader2 className="w-6 h-6 animate-spin text-[#176e57]" />
@@ -708,10 +778,12 @@ export default function Login({ onLoginSuccess }) {
                     id={`otp-${idx}`}
                     type="text"
                     inputMode="numeric"
-                    maxLength={1}
+                    maxLength={6}
                     value={digit}
                     onChange={(e) => handleOtpDigitChange(idx, e.target.value)}
                     onKeyDown={(e) => handleOtpKeyDown(idx, e)}
+                    onPaste={handleOtpPaste}
+                    onFocus={(e) => e.target.select()}
                     className={`w-11 h-12 text-center text-lg font-bold font-mono border rounded-xl bg-white text-slate-800 focus:outline-none focus:border-[#176e57] focus:ring-2 focus:ring-[#176e57]/20 transition-all duration-150 shadow-sm ${
                       digit ? 'border-[#176e57] scale-105 shadow-emerald-50' : 'border-slate-300'
                     }`}

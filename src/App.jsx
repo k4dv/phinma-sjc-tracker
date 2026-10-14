@@ -396,35 +396,37 @@ export default function App() {
   return (
     <div className="max-w-md mx-auto min-h-screen bg-[#f8fafc] shadow-xl flex flex-col relative overflow-x-hidden font-sans">
       
-      {/* CINEMATIC CURTAIN */}
+{/* CINEMATIC CURTAIN (Locked to mobile frame on desktop & native full-screen on mobile) */}
       {isCurtainActive && (
-        <div 
-          className={`fixed inset-x-0 top-0 z-50 overflow-hidden flex flex-col justify-center items-center text-white bg-slate-950 max-w-md mx-auto pointer-events-none will-change-transform ${
-            curtainStage === 'sliding_up' ? 'animate-curtain-up' : 'animate-curtain-down'
-          }`}
-        >
-          <img
-            src={schoolBg}
-            alt="PHINMA SJC"
-            className="absolute inset-0 w-full h-full object-cover object-center pointer-events-none opacity-40 will-change-transform"
-          />
+        <div className="fixed inset-0 z-[200] flex items-center justify-center pointer-events-none">
+          <div 
+            className={`w-full max-w-md h-[100dvh] relative overflow-hidden flex flex-col justify-center items-center text-white bg-slate-950 shadow-2xl will-change-transform ${
+              curtainStage === 'sliding_up' ? 'animate-curtain-up' : 'animate-curtain-down'
+            }`}
+          >
+            <img
+              src={schoolBg}
+              alt="PHINMA SJC"
+              className="absolute inset-0 w-full h-full object-cover object-center pointer-events-none opacity-40 will-change-transform"
+            />
 
-          <div className="absolute inset-0 bg-[#0c3b2e]/60 pointer-events-none" />
-          <div className="absolute inset-0 bg-gradient-to-t from-[#176e57] via-black/35 to-black/55 pointer-events-none" />
+            <div className="absolute inset-0 bg-[#0c3b2e]/60 pointer-events-none" />
+            <div className="absolute inset-0 bg-gradient-to-t from-[#176e57] via-black/35 to-black/55 pointer-events-none" />
 
-          <div className="relative z-10 flex flex-col items-center justify-center">
-            <div 
-              className={`w-24 h-24 rounded-3xl bg-white p-2 shadow-2xl flex items-center justify-center ring-4 ring-white/90 will-change-transform ${
-                curtainStage === 'spinning' || curtainStage === 'stopped' || curtainStage === 'sliding_up'
-                  ? 'animate-logo-spin'
-                  : ''
-              }`}
-            >
-              <img
-                src={sjcLogo}
-                alt="PHINMA SJC Crest"
-                className="w-full h-full object-contain pointer-events-none rounded-2xl"
-              />
+            <div className="relative z-10 flex flex-col items-center justify-center">
+              <div 
+                className={`w-20 h-20 rounded-2xl bg-white p-1.5 shadow-2xl flex items-center justify-center ring-2 ring-white/90 origin-center will-change-transform ${
+                  curtainStage === 'spinning' || curtainStage === 'stopped' || curtainStage === 'sliding_up'
+                    ? 'animate-logo-spin'
+                    : ''
+                }`}
+              >
+                <img
+                  src={sjcLogo}
+                  alt="PHINMA SJC Crest"
+                  className="w-full h-full object-contain pointer-events-none rounded-xl"
+                />
+              </div>
             </div>
           </div>
         </div>

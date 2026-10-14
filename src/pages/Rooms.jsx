@@ -53,7 +53,6 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
       }
     }
 
-    // Clean browser history state so background sync won't re-trigger
     if (location.state?.targetFloor || location.state?.targetRoomId) {
       window.history.replaceState({}, document.title);
     }
@@ -93,7 +92,6 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
       notes: notesVal
     };
 
-    // Optimistic local state update for instant UI feedback
     if (setRooms) {
       setRooms((prev) =>
         prev.map((r) =>
@@ -116,17 +114,16 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
     }
 
     try {
-      // Routed through Node.js & Express MVC Backend API
       await api.updateRoom(activeModalRoom.id, updatedData);
       setToastMessage(`Room ${activeModalRoom.id} inspection recorded via Express API!`);
-      setTimeout(() => setToastMessage(''), 3000);
+      setTimeout(() => setToastMessage(''), 3500);
       handleCloseRoomModal();
     } catch (err) {
       console.warn('Express API unavailable, attempting client fallback:', err);
       try {
         await supabase.from('rooms').update(updatedData).eq('id', activeModalRoom.id);
         setToastMessage(`Room ${activeModalRoom.id} inspection recorded (offline mode)!`);
-        setTimeout(() => setToastMessage(''), 3000);
+        setTimeout(() => setToastMessage(''), 3500);
         handleCloseRoomModal();
       } catch (fallbackErr) {
         console.error('All update paths failed:', fallbackErr);
@@ -136,7 +133,6 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
     }
   };
 
-  // Filter classrooms by selected floor & search query
   const floorRooms = useMemo(() => {
     return rooms.filter((r) => {
       const matchesFloor = searchQuery.trim() !== '' ? true : r.floor === selectedFloor;
@@ -158,9 +154,34 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
   return (
     <div className="p-4 space-y-3.5 pb-28 text-slate-800">
       
-      {/* Floating Notification */}
-      {toastMessage && createPortal(
-        <div className="fixed top-20 inset-x-0 z-[150] max-w-md mx-auto px-4 pointer-events-none animate-toast">
+      {/* Toast Keyframe Styles */}
+      <style>{`
+        @keyframes toastFadeInOut {
+          0% {
+            opacity: 0;
+            transform: translateY(-12px) scale(0.96);
+          }
+          10% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+          85% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+          100% {
+            opacity: 0;
+            transform: translateY(-8px) scale(0.97);
+          }
+        }
+        .animate-toast-smooth {
+          animation: toastFadeInOut 3.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+      `}</style>
+
+      {/* Floating Notification with Smooth Fade-in & Fade-out */}
+      {toastMessage && typeof document !== 'undefined' && createPortal(
+        <div className="fixed top-20 inset-x-0 z-[150] max-w-sm mx-auto px-4 pointer-events-none animate-toast-smooth select-none">
           <div className="pointer-events-auto p-3 bg-emerald-50/95 backdrop-blur-sm border border-emerald-300 text-emerald-800 text-xs font-semibold rounded-2xl flex items-center gap-2.5 shadow-xl">
             <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
             <span className="flex-1 font-medium">{toastMessage}</span>
@@ -191,7 +212,7 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
         </button>
       </div>
 
-      {/* Search Input Bar */}
+      {/* Search Bar */}
       <div className="relative">
         <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
         <input
@@ -308,7 +329,6 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
                   </span>
                 </div>
 
-                {/* Status Checklist Badges */}
                 <div className="flex items-center gap-3 text-[11px] text-slate-500 pt-1 border-t border-slate-50">
                   <span className={`flex items-center gap-1 ${room.acChecked ? 'text-emerald-700' : 'text-amber-600 font-medium'}`}>
                     <Power className="w-3.5 h-3.5" />
@@ -342,7 +362,7 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
       </div>
 
       {/* Room Inspection Modal */}
-      {activeModalRoom && createPortal(
+      {activeModalRoom && typeof document !== 'undefined' && createPortal(
         <div 
           className="fixed inset-0 z-[120] bg-black/65 backdrop-blur-xs flex items-end sm:items-center justify-center sm:p-4 select-none"
           onClick={handleCloseRoomModal}
@@ -351,7 +371,6 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
             className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl shadow-2xl border border-slate-100 flex flex-col max-h-[85vh] sm:max-h-[88vh] animate-sheet-up overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Modal Header */}
             <div className="p-3.5 px-4 border-b border-slate-100 flex items-center justify-between flex-shrink-0">
               <div>
                 <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block">
@@ -370,10 +389,7 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
               </button>
             </div>
 
-            {/* Scrollable Form Body */}
             <div className="p-3.5 px-4 overflow-y-auto space-y-3 text-xs flex-1">
-              
-              {/* 1. Students Occupancy Switch */}
               <div 
                 onClick={() => setHasStudentsVal(!hasStudentsVal)}
                 className={`p-2.5 rounded-2xl border flex items-center justify-between cursor-pointer active:scale-[0.99] transition ${
@@ -401,7 +417,6 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
                 </div>
               </div>
 
-              {/* 2. Cleanliness Status Selector */}
               <div>
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5">
                   Sanitation & Cleanliness:
@@ -433,7 +448,6 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
                 </div>
               </div>
 
-              {/* Reclean Reason */}
               {statusVal === 'needs_reclean' && (
                 <div className="space-y-1 animate-pop">
                   <label className="text-[10px] font-bold text-rose-600 uppercase tracking-wider block">
@@ -450,7 +464,6 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
                 </div>
               )}
 
-              {/* 3. Safety & Energy Checklist */}
               <div>
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5">
                   Safety & Energy Checks:
@@ -487,7 +500,6 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
                 </div>
               </div>
 
-              {/* 4. Notes & Incident Input */}
               <div>
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
                   Room Notes & Incident Reports:
@@ -500,10 +512,8 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {} }) 
                   className="w-full p-2 text-xs border border-slate-200 rounded-xl focus:outline-none focus:border-[#176e57] bg-slate-50 text-slate-800 resize-none"
                 />
               </div>
-
             </div>
 
-            {/* Bottom Actions Bar */}
             <div className="p-3 px-4 bg-white border-t border-slate-100 flex items-center gap-2 flex-shrink-0">
               <button
                 type="button"

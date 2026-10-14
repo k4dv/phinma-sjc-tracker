@@ -157,13 +157,13 @@ export default function Profile({ user, onLogout, assignments = {} }) {
 
     if (user?.id) {
       try {
-        await supabase.from('profiles').delete().eq('id', String(user.id));
+        await supabase.from('profiles').update({ avatar: null }).eq('id', String(user.id));
       } catch (err) {
         console.error('Error removing cloud avatar:', err);
       }
     }
 
-    setSuccessMsg('Profile picture reset to default crest.');
+    setSuccessMsg('Profile picture reset to default avatar.');
     setTimeout(() => setSuccessMsg(''), 3500);
   };
 
@@ -202,16 +202,19 @@ export default function Profile({ user, onLogout, assignments = {} }) {
 
     if (currentPassInput !== actualCurrentPass) {
       setErrorMsg('Current password does not match.');
+      setTimeout(() => setErrorMsg(''), 3500);
       return;
     }
 
     if (newPassInput.length < 6) {
       setErrorMsg('New password must be at least 6 characters.');
+      setTimeout(() => setErrorMsg(''), 3500);
       return;
     }
 
     if (newPassInput !== confirmPassInput) {
       setErrorMsg('New passwords do not match.');
+      setTimeout(() => setErrorMsg(''), 3500);
       return;
     }
 
@@ -223,19 +226,66 @@ export default function Profile({ user, onLogout, assignments = {} }) {
       setCurrentPassInput('');
       setNewPassInput('');
       setConfirmPassInput('');
-      setTimeout(() => setSuccessMsg(''), 4000);
+      setTimeout(() => setSuccessMsg(''), 3500);
     }, 400);
   };
 
   const handleClearDeviceTrust = () => {
     localStorage.removeItem('sjc_trusted_devices');
     setSuccessMsg('Trusted device sessions cleared. 2FA required on next login.');
-    setTimeout(() => setSuccessMsg(''), 4000);
+    setTimeout(() => setSuccessMsg(''), 3500);
   };
 
   return (
     <div className="p-4 space-y-3.5 pb-28 text-slate-800">
       
+      {/* Toast Keyframe Styles */}
+      <style>{`
+        @keyframes toastFadeInOut {
+          0% {
+            opacity: 0;
+            transform: translateY(-12px) scale(0.96);
+          }
+          10% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+          85% {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+          100% {
+            opacity: 0;
+            transform: translateY(-8px) scale(0.97);
+          }
+        }
+        .animate-toast-smooth {
+          animation: toastFadeInOut 3.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+      `}</style>
+
+      {/* Floating Success Notification */}
+      {successMsg && typeof document !== 'undefined' && createPortal(
+        <div className="fixed top-20 inset-x-0 z-[150] max-w-sm mx-auto px-4 pointer-events-none animate-toast-smooth select-none">
+          <div className="pointer-events-auto p-3 bg-emerald-50/95 backdrop-blur-sm border border-emerald-300 text-emerald-800 text-xs font-semibold rounded-2xl flex items-center gap-2.5 shadow-xl">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+            <span className="flex-1 font-medium">{successMsg}</span>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Floating Error Notification */}
+      {errorMsg && typeof document !== 'undefined' && createPortal(
+        <div className="fixed top-20 inset-x-0 z-[150] max-w-sm mx-auto px-4 pointer-events-none animate-toast-smooth select-none">
+          <div className="pointer-events-auto p-3 bg-rose-50/95 backdrop-blur-sm border border-rose-300 text-rose-800 text-xs font-semibold rounded-2xl flex items-center gap-2.5 shadow-xl animate-shake">
+            <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
+            <span className="flex-1 font-medium">{errorMsg}</span>
+          </div>
+        </div>,
+        document.body
+      )}
+
       {/* Hidden File Picker */}
       <input
         type="file"
@@ -327,13 +377,6 @@ export default function Profile({ user, onLogout, assignments = {} }) {
         )}
       </div>
 
-      {successMsg && (
-        <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold rounded-2xl flex items-center gap-2 animate-pop">
-          <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
-          <span>{successMsg}</span>
-        </div>
-      )}
-
       {/* 1. EXPERIENCE & PRESENTATION MODE */}
       <div className="bg-white rounded-3xl border border-slate-100 shadow-[0_2px_8px_rgba(0,0,0,0.02)] overflow-hidden">
         <button
@@ -417,13 +460,6 @@ export default function Profile({ user, onLogout, assignments = {} }) {
 
         {openSections.security && (
           <div className="p-4 pt-3 border-t border-slate-100 animate-sheet-up">
-            {errorMsg && (
-              <div className="mb-3 p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium rounded-xl flex items-center gap-2 animate-shake">
-                <AlertCircle className="w-4 h-4 flex-shrink-0 text-rose-600" />
-                <span>{errorMsg}</span>
-              </div>
-            )}
-
             <form onSubmit={handlePasswordChange} className="space-y-3 text-xs">
               <div>
                 <label className="text-[11px] font-bold text-slate-700 block mb-1">
@@ -527,7 +563,7 @@ export default function Profile({ user, onLogout, assignments = {} }) {
         <span>Log Out of Session</span>
       </button>
 
-      {showLogoutConfirm && createPortal(
+      {showLogoutConfirm && typeof document !== 'undefined' && createPortal(
         <div 
           className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-backdrop text-slate-800 select-none"
           onClick={() => setShowLogoutConfirm(false)}
@@ -545,7 +581,7 @@ export default function Profile({ user, onLogout, assignments = {} }) {
                 Log Out of Session?
               </h3>
               <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                End active custodial session for <strong>{user?.name}</strong>?
+                End active session for <strong>{user?.name}</strong>?
               </p>
             </div>
 
