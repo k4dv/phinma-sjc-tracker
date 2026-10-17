@@ -33,7 +33,100 @@ export default function App() {
     return saved ? JSON.parse(saved) : null;
   });
 
-  // Cached rooms prevents percentage flash on reload
+  const [isDesktopView, setIsDesktopView] = useState(() => {
+    const savedUser = localStorage.getItem('sjc_active_user') || sessionStorage.getItem('sjc_active_user');
+    const parsedUser = savedUser ? JSON.parse(savedUser) : null;
+    if (!parsedUser) return false;
+
+    const isUserAdmin = parsedUser?.role === 'admin' || Number(parsedUser?.access_level) >= 2;
+    const savedPref = localStorage.getItem('sjc_desktop_view');
+    const isDesktopScreen = typeof window !== 'undefined' && window.innerWidth >= 768;
+
+    return isUserAdmin && (savedPref === 'true' || (savedPref !== 'false' && isDesktopScreen));
+  });
+
+  const isAdmin = user?.role === 'admin' || Number(user?.access_level) >= 2;
+  const isWide = isAdmin && isDesktopView;
+
+  // Curtain Stages: 'idle' | 'dropping' | 'sliding_up'
+  const [curtainStage, setCurtainStage] = useState('idle');
+  const [curtainWidth, setCurtainWidth] = useState('mobile');
+
+  // Seamless Widescreen <-> Phone Switcher with Zero Layout Leaks
+  const handleToggleDesktopWithCurtain = () => {
+    if (!isAdmin || curtainStage !== 'idle') return;
+
+    const animationsDisabled = localStorage.getItem('sjc_animations_disabled') === 'true';
+    const targetIsWide = !isDesktopView;
+
+    if (animationsDisabled) {
+      setIsDesktopView(targetIsWide);
+      localStorage.setItem('sjc_desktop_view', String(targetIsWide));
+      navigate('/dashboard');
+      return;
+    }
+
+    if (targetIsWide) {
+      // ==========================================
+      // SEQUENCE A: PHONE -> PC WIDESCREEN
+      // ==========================================
+      setCurtainWidth('mobile');
+      setCurtainStage('dropping');
+
+      // Expand curtain across monitor while crest spins
+      setTimeout(() => {
+        setCurtainWidth('wide');
+      }, 1000);
+
+      // Switch layout behind the full-screen curtain before sliding up
+      setTimeout(() => {
+        setIsDesktopView(true);
+        localStorage.setItem('sjc_desktop_view', 'true');
+      }, 2100);
+
+      // Reveal widescreen dashboard
+      setTimeout(() => {
+        navigate('/dashboard');
+        window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+        setCurtainStage('sliding_up');
+      }, 2500);
+
+      setTimeout(() => {
+        setCurtainStage('idle');
+      }, 3600);
+
+    } else {
+      // ==========================================
+      // SEQUENCE B: PC WIDESCREEN -> PHONE
+      // ==========================================
+      // 1. Drop the curtain at full monitor width to completely cover the widescreen layout
+      setCurtainWidth('wide');
+      setCurtainStage('dropping');
+
+      // 2. WHILE SCREEN IS 100% COVERED: Switch layout to phone mode underneath
+      setTimeout(() => {
+        setIsDesktopView(false);
+        localStorage.setItem('sjc_desktop_view', 'false');
+        navigate('/dashboard');
+        window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+      }, 850);
+
+      // 3. Now that layout underneath is already a mobile card, smoothly shrink curtain inward
+      setTimeout(() => {
+        setCurtainWidth('mobile');
+      }, 1100);
+
+      // 4. Slide up to reveal the mobile container cleanly
+      setTimeout(() => {
+        setCurtainStage('sliding_up');
+      }, 2400);
+
+      setTimeout(() => {
+        setCurtainStage('idle');
+      }, 3500);
+    }
+  };
+
   const [rooms, setRooms] = useState(() => {
     try {
       const cached = localStorage.getItem('sjc_cached_rooms');
@@ -60,52 +153,38 @@ export default function App() {
 
   const [showGlobalScanner, setShowGlobalScanner] = useState(false);
 
-  // Transition Curtain Stage: 'idle' | 'expanding' | 'spinning' | 'stopped' | 'sliding_up'
-  const [curtainStage, setCurtainStage] = useState('idle');
-
-  // Route Change Viewport Reset: snaps to top of header on mobile
   useEffect(() => {
     if ('scrollRestoration' in window.history) {
       window.history.scrollRestoration = 'manual';
     }
-
     window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
     document.documentElement.scrollTop = 0;
     document.body.scrollTop = 0;
   }, [location.pathname]);
 
-  // Initial animation and theme setup
   useEffect(() => {
     if (localStorage.getItem('sjc_animations_disabled') === 'true') {
       document.body.classList.add('disable-animations');
     } else {
       document.body.classList.remove('disable-animations');
     }
-
     document.documentElement.classList.remove('dark');
     localStorage.removeItem('sjc_theme');
   }, []);
 
-  // 1. Initial Data Fetch via Node/Express MVC API (with Supabase fallback)
+  // Initial Data Fetch
   useEffect(() => {
     const fetchInitialData = async () => {
       try {
         const [backendRooms, backendSupplies, assignRes, broadRes, logsRes, reqsRes] = await Promise.all([
-          api.getRooms().catch((err) => {
-            console.warn('Express rooms API offline, falling back to Supabase client:', err);
-            return null;
-          }),
-          api.getSupplies().catch((err) => {
-            console.warn('Express supplies API offline, falling back to Supabase client:', err);
-            return null;
-          }),
+          api.getRooms().catch(() => null),
+          api.getSupplies().catch(() => null),
           supabase.from('assignments').select('*'),
           supabase.from('broadcast').select('*').limit(1),
           supabase.from('logs').select('*').order('created_at', { ascending: false }).limit(20),
           supabase.from('teacher_requests').select('*').order('created_at', { ascending: false }).limit(20)
         ]);
 
-        // Process Rooms
         let rawRooms = backendRooms;
         if (!rawRooms) {
           const fallback = await supabase.from('rooms').select('*').order('id', { ascending: true });
@@ -116,6 +195,7 @@ export default function App() {
           const formattedRooms = rawRooms.map((r) => ({
             id: r.id,
             floor: r.floor,
+            building: r.building || 'Dimasalang',
             status: r.status,
             staff: r.staff,
             lastCleaned: r.last_cleaned || r.lastCleaned,
@@ -131,7 +211,6 @@ export default function App() {
           localStorage.setItem('sjc_cached_rooms', JSON.stringify(formattedRooms));
         }
 
-        // Process Supplies
         let rawSupplies = backendSupplies;
         if (!rawSupplies) {
           const fallback = await supabase.from('supplies').select('*').order('id', { ascending: true });
@@ -139,14 +218,26 @@ export default function App() {
         }
         if (rawSupplies?.length) setSupplies(rawSupplies);
 
-        // Process Assignments
         if (assignRes.data?.length) {
           const assignMap = {};
-          assignRes.data.forEach((a) => { assignMap[a.floor] = a.staff_id; });
+          assignRes.data.forEach((a) => {
+            const bldg = a.building || 'Dimasalang';
+            const compositeKey = `${bldg}_${a.floor}`;
+
+            if (!assignMap[compositeKey]) assignMap[compositeKey] = [];
+            if (!assignMap[compositeKey].includes(a.staff_id)) {
+              assignMap[compositeKey].push(a.staff_id);
+            }
+            if (bldg === 'Dimasalang') {
+              if (!assignMap[a.floor]) assignMap[a.floor] = [];
+              if (!assignMap[a.floor].includes(a.staff_id)) {
+                assignMap[a.floor].push(a.staff_id);
+              }
+            }
+          });
           setAssignments(assignMap);
         }
 
-        // Process Broadcast Notice
         if (broadRes.data && broadRes.data.length > 0) {
           const b = broadRes.data[0];
           setBroadcast({
@@ -157,7 +248,6 @@ export default function App() {
           });
         }
 
-        // Process Logs & Requests
         if (logsRes.data?.length) setLogs(logsRes.data);
 
         if (reqsRes.data?.length) {
@@ -172,126 +262,107 @@ export default function App() {
     fetchInitialData();
   }, []);
 
-  // 2. Real-Time WebSocket Subscriptions & Local Sync
+  // Real-Time WebSocket Subscriptions
   useEffect(() => {
-    const handleNewRequestEvent = (e) => {
-      if (e.detail) {
-        setTeacherRequests((prev) => [e.detail, ...prev.filter((r) => r.id !== e.detail.id)]);
-      }
-    };
-
-    const handleStorageChange = (e) => {
-      if (e.key === 'sjc_teacher_requests' && e.newValue) {
-        try {
-          setTeacherRequests(JSON.parse(e.newValue));
-        } catch (err) {
-          console.error('Storage parse error:', err);
-        }
-      }
-    };
-
-    window.addEventListener('sjc_request_created', handleNewRequestEvent);
-    window.addEventListener('storage', handleStorageChange);
-
     const channel = supabase
       .channel('schema-db-changes')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'rooms' }, (payload) => {
         if (payload.eventType === 'UPDATE' && payload.new) {
           const updated = payload.new;
+          const updatedBldg = updated.building || 'Dimasalang';
+
           setRooms((prev) => {
-            const next = prev.map((r) => r.id === updated.id ? {
-              id: updated.id,
-              floor: updated.floor,
-              status: updated.status,
-              staff: updated.staff,
-              lastCleaned: updated.last_cleaned,
-              recleanReason: updated.reclean_reason,
-              acChecked: updated.ac_checked,
-              lightsChecked: updated.lights_checked,
-              doorChecked: updated.door_checked,
-              hasStudents: updated.has_students ?? false,
-              has_students: updated.has_students ?? false,
-              notes: updated.notes ?? ''
-            } : r);
+            const next = prev.map((r) => {
+              const roomBldg = r.building || 'Dimasalang';
+              if (r.id === updated.id && roomBldg === updatedBldg) {
+                return {
+                  ...r,
+                  status: updated.status,
+                  staff: updated.staff,
+                  lastCleaned: updated.last_cleaned,
+                  recleanReason: updated.reclean_reason,
+                  acChecked: updated.ac_checked,
+                  lightsChecked: updated.lights_checked,
+                  doorChecked: updated.door_checked,
+                  hasStudents: updated.has_students ?? false,
+                  has_students: updated.has_students ?? false,
+                  notes: updated.notes ?? ''
+                };
+              }
+              return r;
+            });
             localStorage.setItem('sjc_cached_rooms', JSON.stringify(next));
             return next;
           });
         }
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'supplies' }, (payload) => {
-        if (payload.eventType === 'UPDATE' && payload.new) {
-          const updated = payload.new;
-          setSupplies((prev) => prev.map((s) => s.id === updated.id ? updated : s));
-        } else if (payload.eventType === 'INSERT' && payload.new) {
-          setSupplies((prev) => {
-            if (prev.some((s) => s.id === payload.new.id || s.name === payload.new.name)) return prev;
-            return [...prev, payload.new];
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, async () => {
+        const { data } = await supabase.from('assignments').select('*');
+        if (data) {
+          const assignMap = {};
+          data.forEach((a) => {
+            const bldg = a.building || 'Dimasalang';
+            const compositeKey = `${bldg}_${a.floor}`;
+            if (!assignMap[compositeKey]) assignMap[compositeKey] = [];
+            if (!assignMap[compositeKey].includes(a.staff_id)) {
+              assignMap[compositeKey].push(a.staff_id);
+            }
+            if (bldg === 'Dimasalang') {
+              if (!assignMap[a.floor]) assignMap[a.floor] = [];
+              if (!assignMap[a.floor].includes(a.staff_id)) {
+                assignMap[a.floor].push(a.staff_id);
+              }
+            }
           });
-        } else if (payload.eventType === 'DELETE' && payload.old) {
-          setSupplies((prev) => prev.filter((s) => s.id !== payload.old.id));
-        }
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, (payload) => {
-        if (payload.new) {
-          const updated = payload.new;
-          setAssignments((prev) => ({ ...prev, [updated.floor]: updated.staff_id }));
+          setAssignments(assignMap);
         }
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'broadcast' }, (payload) => {
         if (payload.new) {
-          const updated = payload.new;
           setBroadcast({
-            active: updated.active,
-            message: updated.message,
-            postedBy: updated.posted_by,
-            updatedAt: updated.updated_at
+            active: payload.new.active,
+            message: payload.new.message,
+            postedBy: payload.new.posted_by,
+            updatedAt: payload.new.updated_at
           });
-        }
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'logs' }, (payload) => {
-        if (payload.eventType === 'INSERT' && payload.new) {
-          setLogs((prev) => {
-            const isDuplicate = prev.some(
-              (item) => item.id === payload.new.id || (item.text === payload.new.text && item.time === payload.new.time)
-            );
-            if (isDuplicate) return prev;
-            return [payload.new, ...prev];
-          });
-        } else if (payload.eventType === 'DELETE' && payload.old) {
-          setLogs((prev) => prev.filter((l) => l.id !== payload.old.id));
         }
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'teacher_requests' }, (payload) => {
         if (payload.eventType === 'INSERT' && payload.new) {
           setTeacherRequests((prev) => {
-            const next = [payload.new, ...prev.filter((r) => r.id !== payload.new.id)];
+            const next = [payload.new, ...prev.filter((item) => item.id !== payload.new.id)];
             localStorage.setItem('sjc_teacher_requests', JSON.stringify(next));
             return next;
           });
         } else if (payload.eventType === 'UPDATE' && payload.new) {
           setTeacherRequests((prev) => {
-            const next = prev.map((r) => r.id === payload.new.id ? payload.new : r);
+            const next = prev.map((item) => item.id === payload.new.id ? payload.new : item);
             localStorage.setItem('sjc_teacher_requests', JSON.stringify(next));
             return next;
           });
         } else if (payload.eventType === 'DELETE' && payload.old) {
           setTeacherRequests((prev) => {
-            const next = prev.filter((r) => r.id !== payload.old.id);
+            const next = prev.filter((item) => item.id !== payload.old.id);
             localStorage.setItem('sjc_teacher_requests', JSON.stringify(next));
             return next;
           });
         }
       })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'logs' }, (payload) => {
+        if (payload.eventType === 'INSERT' && payload.new) {
+          setLogs((prev) => [payload.new, ...prev.filter((log) => log.id !== payload.new.id)]);
+        } else if (payload.eventType === 'DELETE' && payload.old) {
+          setLogs((prev) => prev.filter((log) => log.id !== payload.old.id));
+        }
+      })
       .subscribe();
 
     return () => {
-      window.removeEventListener('sjc_request_created', handleNewRequestEvent);
-      window.removeEventListener('storage', handleStorageChange);
       supabase.removeChannel(channel);
     };
   }, []);
 
-  // 3. Supabase Real-Time Presence
+  // Supabase Real-Time Presence
   useEffect(() => {
     if (!user) return;
 
@@ -321,10 +392,8 @@ export default function App() {
     };
   }, [user]);
 
-  // Login Transition Sequence
+  // Login handler
   const handleLoginSuccess = (userData, remember) => {
-    sessionStorage.removeItem('sjc_dash_animated');
-
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
     }
@@ -333,8 +402,16 @@ export default function App() {
     const isQuickLogin = localStorage.getItem('sjc_quick_login') === 'true' || 
                          localStorage.getItem('sjc_animations_disabled') === 'true';
 
+    const isUserAdmin = userData?.role === 'admin' || Number(userData?.access_level) >= 2;
+    const isDesktopScreen = typeof window !== 'undefined' && window.innerWidth >= 768;
+    const savedPref = localStorage.getItem('sjc_desktop_view');
+    const shouldUnfoldToWide = isUserAdmin && (savedPref === 'true' || (savedPref !== 'false' && isDesktopScreen));
+
     const persistUser = () => {
       setUser(userData);
+      if (shouldUnfoldToWide) {
+        localStorage.setItem('sjc_desktop_view', 'true');
+      }
       if (remember) {
         localStorage.setItem('sjc_active_user', JSON.stringify(userData));
         sessionStorage.removeItem('sjc_active_user');
@@ -346,44 +423,66 @@ export default function App() {
 
     if (isQuickLogin) {
       persistUser();
+      if (shouldUnfoldToWide) setIsDesktopView(true);
       navigate('/dashboard');
       return;
     }
 
-    setCurtainStage('expanding');
+    setCurtainWidth('mobile');
+    setCurtainStage('dropping');
 
-    setTimeout(() => {
-      setCurtainStage('spinning');
-    }, 700);
+    if (shouldUnfoldToWide) {
+      setTimeout(() => {
+        setCurtainWidth('wide');
+      }, 1000);
 
-    setTimeout(() => {
-      setCurtainStage('stopped');
-    }, 2900);
+      setTimeout(() => {
+        persistUser();
+        setIsDesktopView(true);
+        navigate('/dashboard');
+        window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+        setCurtainStage('sliding_up');
+      }, 2900);
 
-    setTimeout(() => {
-      persistUser();
-      navigate('/dashboard');
-      window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
-      setCurtainStage('sliding_up');
-    }, 3250);
+      setTimeout(() => setCurtainStage('idle'), 4000);
 
-    setTimeout(() => {
-      setCurtainStage('idle');
-    }, 4150);
+    } else {
+      setTimeout(() => {
+        persistUser();
+        setIsDesktopView(false);
+        navigate('/dashboard');
+        window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+        setCurtainStage('sliding_up');
+      }, 2900);
+
+      setTimeout(() => setCurtainStage('idle'), 4000);
+    }
   };
 
   const handleLogout = () => {
-    sessionStorage.removeItem('sjc_dash_animated');
-    setUser(null);
-    localStorage.removeItem('sjc_active_user');
     sessionStorage.removeItem('sjc_active_user');
+    localStorage.removeItem('sjc_active_user');
+    
+    setUser(null);
+    setIsDesktopView(false);
+    navigate('/login', { replace: true });
   };
 
   const handleGlobalScanSuccess = (scannedRoomId) => {
+    const rawId = String(scannedRoomId).trim();
+    const idNum = parseInt(rawId, 10);
+    const floor = Math.floor(idNum / 100) || 1;
+    const tens = Math.floor((idNum % 100) / 10);
+
+    let detectedBuilding = 'Dimasalang';
+    if (tens === 4) detectedBuilding = 'Silang';
+    else if (tens === 2) detectedBuilding = 'Phinma';
+
     navigate('/rooms', {
       state: {
-        targetRoomId: scannedRoomId,
-        targetFloor: Number(String(scannedRoomId)[0]),
+        targetRoomId: rawId,
+        targetFloor: floor,
+        targetBuilding: detectedBuilding,
         scanTimestamp: Date.now()
       }
     });
@@ -394,33 +493,55 @@ export default function App() {
   const isCurtainActive = curtainStage !== 'idle';
 
   return (
-    <div className="max-w-md mx-auto min-h-screen bg-[#f8fafc] shadow-xl flex flex-col relative overflow-x-hidden font-sans">
+    <div 
+      className={`min-h-screen bg-[#f8fafc] text-slate-800 flex flex-col relative overflow-x-hidden font-sans transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+        isWide ? 'w-full' : 'w-full max-w-md mx-auto shadow-2xl'
+      }`}
+    >
       
-{/* CINEMATIC CURTAIN (Locked to mobile frame on desktop & native full-screen on mobile) */}
+      {/* Fluid Curtain Keyframes */}
+      <style>{`
+        @keyframes fluidCurtainDown {
+          0% { transform: translate3d(0, -100%, 0); }
+          100% { transform: translate3d(0, 0, 0); }
+        }
+        @keyframes fluidCurtainUp {
+          0% { transform: translate3d(0, 0, 0); }
+          100% { transform: translate3d(0, -100%, 0); }
+        }
+        .animate-fluid-down {
+          animation: fluidCurtainDown 0.85s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+        .animate-fluid-up {
+          animation: fluidCurtainUp 1.05s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+      `}</style>
+
+      {/* CURTAIN OVERLAY */}
       {isCurtainActive && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center pointer-events-none">
           <div 
-            className={`w-full max-w-md h-[100dvh] relative overflow-hidden flex flex-col justify-center items-center text-white bg-slate-950 shadow-2xl will-change-transform ${
-              curtainStage === 'sliding_up' ? 'animate-curtain-up' : 'animate-curtain-down'
+            className={`h-[100dvh] relative overflow-hidden flex flex-col justify-center items-center text-white bg-slate-950 shadow-2xl will-change-[width,max-width,transform] ${
+              curtainStage === 'sliding_up'
+                ? 'animate-fluid-up'
+                : 'animate-fluid-down'
             }`}
+            style={{
+              width: '100%',
+              maxWidth: curtainWidth === 'wide' ? '100vw' : '28rem',
+              transition: 'max-width 1.25s cubic-bezier(0.16, 1, 0.3, 1)'
+            }}
           >
             <img
               src={schoolBg}
               alt="PHINMA SJC"
               className="absolute inset-0 w-full h-full object-cover object-center pointer-events-none opacity-40 will-change-transform"
             />
-
-            <div className="absolute inset-0 bg-[#0c3b2e]/60 pointer-events-none" />
-            <div className="absolute inset-0 bg-gradient-to-t from-[#176e57] via-black/35 to-black/55 pointer-events-none" />
+            <div className="absolute inset-0 bg-[#0c3b2e]/65 pointer-events-none" />
+            <div className="absolute inset-0 bg-gradient-to-t from-[#176e57] via-black/35 to-black/60 pointer-events-none" />
 
             <div className="relative z-10 flex flex-col items-center justify-center">
-              <div 
-                className={`w-20 h-20 rounded-2xl bg-white p-1.5 shadow-2xl flex items-center justify-center ring-2 ring-white/90 origin-center will-change-transform ${
-                  curtainStage === 'spinning' || curtainStage === 'stopped' || curtainStage === 'sliding_up'
-                    ? 'animate-logo-spin'
-                    : ''
-                }`}
-              >
+              <div className="w-20 h-20 rounded-2xl bg-white p-1.5 shadow-[0_12px_45px_rgba(0,0,0,0.4)] flex items-center justify-center ring-2 ring-white/90 origin-center animate-logo-spin">
                 <img
                   src={sjcLogo}
                   alt="PHINMA SJC Crest"
@@ -436,14 +557,15 @@ export default function App() {
         <Header 
           title={`Hi, ${user.name}`} 
           user={user} 
-          onLogout={handleLogout} 
+          onLogout={handleLogout}
         />
       )}
 
+      {/* Broadcast Alert */}
       {user && !isPublicPage && broadcast?.active && broadcast?.message && (
-        <div className="px-4 pt-3 animate-toast">
-          <div className="p-3 bg-amber-50 border border-amber-300 rounded-2xl shadow-xs flex items-start gap-2.5">
-            <div className="p-1.5 bg-amber-200/80 text-amber-800 rounded-xl flex-shrink-0">
+        <div className={`w-full mx-auto px-4 pt-3 animate-toast ${isWide ? 'max-w-5xl' : ''}`}>
+          <div className="p-3.5 bg-amber-50 border border-amber-200/80 rounded-3xl shadow-xs flex items-start gap-3">
+            <div className="p-2 bg-amber-200/80 text-amber-800 rounded-2xl flex-shrink-0">
               <Megaphone className="w-4 h-4" />
             </div>
             <div className="flex-1 text-xs">
@@ -463,7 +585,11 @@ export default function App() {
         </div>
       )}
 
-      <main key={location.pathname} className="flex-1 page-transition">
+      {/* Main Page Area */}
+      <main 
+        key={`${location.pathname}-${isWide ? 'pc' : 'mobile'}`} 
+        className={`flex-1 page-transition ${isWide ? 'w-full max-w-5xl mx-auto px-4 sm:px-6' : 'w-full'}`}
+      >
         <Routes location={location}>
           <Route path="/request" element={<TeacherRequest />} />
           <Route path="/door" element={<QRDoorRouter user={user} />} />
@@ -487,6 +613,7 @@ export default function App() {
                   onlineUsers={onlineUsers}
                   teacherRequests={teacherRequests}
                   setTeacherRequests={setTeacherRequests}
+                  isDesktopView={isWide}
                 />
               ) : (
                 <Navigate to="/login" replace />
@@ -502,7 +629,8 @@ export default function App() {
                   rooms={rooms} 
                   setRooms={setRooms} 
                   user={user} 
-                  assignments={assignments} 
+                  assignments={assignments}
+                  isDesktopView={isWide}
                 />
               ) : (
                 <Navigate to="/login" replace />
@@ -517,7 +645,8 @@ export default function App() {
                 <Supplies 
                   supplies={supplies} 
                   setSupplies={setSupplies} 
-                  user={user} 
+                  user={user}
+                  isDesktopView={isWide}
                 />
               ) : (
                 <Navigate to="/login" replace />
@@ -532,7 +661,9 @@ export default function App() {
                 <Profile 
                   user={user} 
                   onLogout={handleLogout} 
-                  assignments={assignments} 
+                  assignments={assignments}
+                  isDesktopView={isDesktopView}
+                  onToggleDesktopView={handleToggleDesktopWithCurtain}
                 />
               ) : (
                 <Navigate to="/login" replace />
@@ -555,6 +686,7 @@ export default function App() {
                   setBroadcast={setBroadcast}
                   setLogs={setLogs}
                   onlineUsers={onlineUsers}
+                  isDesktopView={isWide}
                 />
               ) : (
                 <Navigate to="/dashboard" replace />
@@ -568,25 +700,23 @@ export default function App() {
 
       {/* Floating QR button on bottom-right */}
       {user && !isPublicPage && (
-        <div className="fixed bottom-20 inset-x-0 max-w-md mx-auto px-4 pointer-events-none z-30 flex justify-end">
-          <button
-            type="button"
-            onClick={() => setShowGlobalScanner(true)}
-            className="pointer-events-auto bg-[#176e57] hover:bg-[#135c49] active:scale-95 text-white p-2 rounded-2xl shadow-xl border border-white/25 flex items-center gap-2 transition-all duration-150 group"
-            title="Scan Room QR Code"
-          >
-            <div className="text-right pl-1.5 leading-tight">
-              <span className="text-[11px] font-bold block text-white">QR Code</span>
-              <span className="text-[9px] text-emerald-200 block font-medium">Quick Scan</span>
-            </div>
-            <div className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center flex-shrink-0">
-              <QrCode className="w-4 h-4 text-white" />
-            </div>
-          </button>
+        <div className="fixed bottom-20 inset-x-0 pointer-events-none z-40">
+          <div className={`mx-auto px-4 flex justify-end ${isWide ? 'max-w-5xl sm:px-6' : 'max-w-md'}`}>
+            <button
+              type="button"
+              onClick={() => setShowGlobalScanner(true)}
+              className="pointer-events-auto bg-[#176e57] hover:bg-[#135c49] active:scale-95 text-white p-2.5 rounded-full shadow-xl border border-white/20 flex items-center gap-2 transition"
+              title="Scan Room QR Code"
+            >
+              <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center flex-shrink-0">
+                <QrCode className="w-4 h-4 text-white" />
+              </div>
+              <span className="text-xs font-bold pr-2 hidden sm:inline">Scan QR</span>
+            </button>
+          </div>
         </div>
       )}
 
-      {/* Global QR Scanner Modal */}
       <QRScannerModal
         isOpen={showGlobalScanner}
         onClose={() => setShowGlobalScanner(false)}
@@ -594,92 +724,7 @@ export default function App() {
         allRoomIds={allRoomIds}
       />
 
-      {/* First-Time Login Password Change Interceptor */}
-      {user?.is_first_login && (
-        <div className="fixed inset-0 z-[200] bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-6 max-w-sm w-full space-y-4 shadow-2xl border border-slate-100 animate-pop">
-            <div>
-              <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 uppercase tracking-wider">
-                Account Setup Required
-              </span>
-              <h3 className="font-extrabold text-slate-900 text-base mt-1.5">
-                First-Time Sign In
-              </h3>
-              <p className="text-xs text-slate-500 mt-1">
-                Welcome to SJC Dimasalang Tracker! Please confirm your name and set a new password before continuing.
-              </p>
-            </div>
-
-            <form
-              onSubmit={async (e) => {
-                e.preventDefault();
-                const formData = new FormData(e.currentTarget);
-                const updatedName = formData.get('fullName')?.toString().trim();
-                const newPassword = formData.get('newPass')?.toString();
-
-                if (!newPassword || newPassword.length < 6) {
-                  alert('Password must be at least 6 characters long.');
-                  return;
-                }
-
-                try {
-                  await api.completeFirstLogin(user.id, { newPassword, updatedName });
-                  const updatedUser = { 
-                    ...user, 
-                    name: updatedName || user.name, 
-                    is_first_login: false 
-                  };
-                  setUser(updatedUser);
-                  if (localStorage.getItem('sjc_active_user')) {
-                    localStorage.setItem('sjc_active_user', JSON.stringify(updatedUser));
-                  } else {
-                    sessionStorage.setItem('sjc_active_user', JSON.stringify(updatedUser));
-                  }
-                } catch (err) {
-                  alert(err.message || 'Failed to update credentials.');
-                }
-              }}
-              className="space-y-3 text-xs"
-            >
-              <div>
-                <label className="text-[10px] font-bold text-slate-600 uppercase block mb-1">
-                  Full Name:
-                </label>
-                <input
-                  name="fullName"
-                  type="text"
-                  required
-                  defaultValue={user.name && user.name !== 'Staff Member' ? user.name : ''}
-                  placeholder="e.g. Kuya Bert"
-                  className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50 focus:outline-none focus:border-[#176e57]"
-                />
-              </div>
-
-              <div>
-                <label className="text-[10px] font-bold text-slate-600 uppercase block mb-1">
-                  New Password (min 6 chars):
-                </label>
-                <input
-                  name="newPass"
-                  type="password"
-                  required
-                  placeholder="Enter personal password"
-                  className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50 focus:outline-none focus:border-[#176e57]"
-                />
-              </div>
-
-              <button
-                type="submit"
-                className="w-full py-2.5 bg-[#176e57] hover:bg-[#135c49] text-white font-bold rounded-xl shadow-xs transition"
-              >
-                Save & Unlock Account
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {user && !isPublicPage && <Navbar user={user} />}
+      {user && !isPublicPage && <Navbar user={user} isDesktopView={isWide} />}
     </div>
   );
 }

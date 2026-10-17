@@ -28,8 +28,19 @@ export default function QRScannerModal({ isOpen, onClose, onScanSuccess, allRoom
   };
 
   const handleValidRoomHit = (scannedRoomId) => {
-    if (allRoomIds.length > 0 && !allRoomIds.includes(String(scannedRoomId))) {
-      setErrorMsg(`Room "${scannedRoomId}" is not in the Dimasalang floor registry.`);
+    const cleanId = String(scannedRoomId).trim();
+    const num = parseInt(cleanId, 10);
+    const floor = Math.floor(num / 100);
+    const tens = Math.floor((num % 100) / 10);
+    const unit = num % 10;
+
+    // Checks against loaded room registry or valid campus numbering (Dimasalang: 0, Phinma: 2, Silang: 4)
+    const isValidCampusRoom =
+      (allRoomIds.length > 0 && allRoomIds.includes(cleanId)) ||
+      (!isNaN(num) && floor >= 1 && floor <= 7 && [0, 2, 4].includes(tens) && unit >= 1 && unit <= 5);
+
+    if (!isValidCampusRoom && allRoomIds.length > 0 && !allRoomIds.includes(cleanId)) {
+      setErrorMsg(`Room "${scannedRoomId}" is not in the campus floor registry.`);
       return;
     }
 
@@ -40,7 +51,7 @@ export default function QRScannerModal({ isOpen, onClose, onScanSuccess, allRoom
 
     stopScanner();
     onClose();
-    onScanSuccess(scannedRoomId);
+    onScanSuccess(cleanId);
   };
 
   const stopScanner = async () => {
@@ -126,7 +137,7 @@ export default function QRScannerModal({ isOpen, onClose, onScanSuccess, allRoom
 
   return createPortal(
     <div 
-      className="fixed inset-0 z-[100] bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-backdrop select-none"
+      className="fixed inset-0 z-[120] bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-backdrop select-none"
       onClick={() => {
         stopScanner();
         onClose();
@@ -170,7 +181,7 @@ export default function QRScannerModal({ isOpen, onClose, onScanSuccess, allRoom
                 Scan Room QR
               </h3>
               <p className="text-[10px] text-slate-400">
-                Point at any Dimasalang door placard
+                Point at any campus door placard
               </p>
             </div>
           </div>
@@ -229,7 +240,7 @@ export default function QRScannerModal({ isOpen, onClose, onScanSuccess, allRoom
               type="text"
               value={manualRoomInput}
               onChange={(e) => setManualRoomInput(e.target.value)}
-              placeholder="e.g. 101, 203, 705"
+              placeholder="e.g. 101, 141 (Silang), 121 (Phinma)"
               className="flex-1 px-3 py-1.5 text-xs border border-slate-200 rounded-xl focus:outline-none focus:border-[#176e57] bg-slate-50 font-mono font-semibold"
             />
             <button

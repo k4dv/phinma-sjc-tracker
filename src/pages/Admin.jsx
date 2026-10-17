@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { supabase } from '../data/supabaseClient';
 import { api } from '../services/api';
+import { sanitizeUser } from '../utils/security';
 import * as XLSX from 'xlsx';
 import { 
   Megaphone, 
@@ -19,16 +20,16 @@ import {
   UserMinus, 
   Shield, 
   X, 
-  Lock 
+  Building2, 
+  User, 
+  Search, 
+  UserCheck 
 } from 'lucide-react';
 
-const FALLBACK_ROSTER = [
-  { id: '001', name: 'Kuya Bert', role: 'staff', access_level: 1, email: 'vhma.nacion.sjc@phinmaed.com' },
-  { id: '002', name: 'Ate Linda', role: 'staff', access_level: 1, email: 'cami.ubuwon.sjc@phinmaed.com' },
-  { id: '003', name: 'Kuya Jun', role: 'staff', access_level: 1, email: 'anco.alfanta.sjc@phinmaed.com' },
-  { id: '004', name: 'Ate Marites', role: 'staff', access_level: 1, email: 'rade.copones.sjc@phinmaed.com' },
-  { id: '005', name: 'Kuya Jomar', role: 'staff', access_level: 1, email: 'vhma.nacion.sjc@phinmaed.com' },
-  { id: 'admin', name: 'System Administrator', role: 'admin', access_level: 2, email: 'vhma.nacion.sjc@phinmaed.com' }
+const CAMPUS_BUILDINGS = [
+  { id: 'Dimasalang', name: 'Dimasalang Building' },
+  { id: 'Silang', name: 'Silang Building' },
+  { id: 'Phinma', name: 'Phinma Building' }
 ];
 
 const ADMIN_TABS = [
@@ -54,34 +55,37 @@ export default function Admin({
   const [toastMessage, setToastMessage] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
 
-  // Staff list state (loaded dynamically from database)
-  const [staffRoster, setStaffRoster] = useState(FALLBACK_ROSTER);
+  const [staffRoster, setStaffRoster] = useState([]);
   const [showStaffDropdown, setShowStaffDropdown] = useState(false);
   const [staffAvatars, setStaffAvatars] = useState({});
 
-  // Account Creation Modal State
+  const [openBuildings, setOpenBuildings] = useState({
+    Dimasalang: false,
+    Silang: false,
+    Phinma: false
+  });
+
+  const [activeAssignSlot, setActiveAssignSlot] = useState(null);
+  const [stagedStaffIds, setStagedStaffIds] = useState([]);
+  const [staffPickerSearch, setStaffPickerSearch] = useState('');
+
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newUserId, setNewUserId] = useState('');
   const [newUserName, setNewUserName] = useState('');
   const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserRole, setNewUserRole] = useState('staff');
   const [newUserAccessLevel, setNewUserAccessLevel] = useState(1);
-  const [adminSecretPasscode, setAdminSecretPasscode] = useState('');
   const [isCreatingAccount, setIsCreatingAccount] = useState(false);
 
-  // Account Deletion Modal State
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [selectedUserToDelete, setSelectedUserToDelete] = useState('');
   const [isDeletingAccount, setIsDeletingAccount] = useState(false);
 
-  // Check animation preferences
   const animationsDisabled = localStorage.getItem('sjc_animations_disabled') === 'true';
 
-  // Broadcast Notice Form
   const [noticeText, setNoticeText] = useState(broadcast.message || '');
   const [isUpdatingNotice, setIsUpdatingNotice] = useState(false);
 
-  // New Supply Item Form
   const [newItemName, setNewItemName] = useState('');
   const [newItemCategory, setNewItemCategory] = useState('Chemicals');
   const [newItemQty, setNewItemQty] = useState('');
@@ -89,7 +93,82 @@ export default function Admin({
   const [newItemThreshold, setNewItemThreshold] = useState('5');
   const [isAddingSupply, setIsAddingSupply] = useState(false);
 
+  const tabBarRef = useRef(null);
+  const pointerStartRef = useRef(null);
+  const [isScrubbing, setIsScrubbing] = useState(false);
+  const [scrubPosition, setScrubPosition] = useState(null);
+  const lastTabRef = useRef(activeTab);
+
+  useEffect(() => {
+    lastTabRef.current = activeTab;
+  }, [activeTab]);
+
+  const updateTabScrub = (clientX) => {
+    if (!tabBarRef.current) return;
+    const rect = tabBarRef.current.getBoundingClientRect();
+    const N = ADMIN_TABS.length;
+    const relX = clientX - rect.left;
+    const t = Math.max(0, Math.min(1, relX / rect.width));
+    const targetIndex = Math.min(N - 1, Math.max(0, Math.floor(t * N)));
+
+    const w = 1 / N;
+    const leftFrac = Math.max(0, Math.min(1 - w, t - w / 2));
+    const unitPos = leftFrac * N;
+    setScrubPosition(unitPos);
+
+    if (ADMIN_TABS[targetIndex].id !== lastTabRef.current) {
+      lastTabRef.current = ADMIN_TABS[targetIndex].id;
+      setActiveTab(ADMIN_TABS[targetIndex].id);
+      if (typeof window !== 'undefined' && 'vibrate' in navigator) {
+        try { navigator.vibrate(12); } catch (_) {}
+      }
+    }
+  };
+
+  const handlePointerDown = (e) => {
+    pointerStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      pointerId: e.pointerId
+    };
+  };
+
+  const handlePointerMove = (e) => {
+    if (!pointerStartRef.current) return;
+
+    const dx = Math.abs(e.clientX - pointerStartRef.current.x);
+    const dy = Math.abs(e.clientY - pointerStartRef.current.y);
+
+    if (!isScrubbing) {
+      if (dx > 8 && dx > dy) {
+        setIsScrubbing(true);
+        try {
+          e.currentTarget.setPointerCapture(pointerStartRef.current.pointerId);
+        } catch (_) {}
+        updateTabScrub(e.clientX);
+      }
+    } else {
+      updateTabScrub(e.clientX);
+    }
+  };
+
+  const handlePointerUp = (e) => {
+    if (isScrubbing) {
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch (_) {}
+      setIsScrubbing(false);
+      setScrubPosition(null);
+    }
+    pointerStartRef.current = null;
+  };
+
   const activeTabIndex = ADMIN_TABS.findIndex((t) => t.id === activeTab);
+  const effectiveOffset = isScrubbing && scrubPosition !== null
+    ? scrubPosition
+    : activeTabIndex !== -1
+    ? activeTabIndex
+    : 0;
 
   const showToast = (msg) => {
     setToastMessage(msg);
@@ -101,54 +180,36 @@ export default function Admin({
     setTimeout(() => setErrorMessage(''), 3500);
   };
 
-  // Helper to resolve clean staff names
   const getStaffName = (staffObj) => {
     if (!staffObj) return 'Unassigned';
-    if (staffObj.name && staffObj.name !== 'Staff Member') return staffObj.name;
-    const fallback = FALLBACK_ROSTER.find((f) => f.id === staffObj.id);
-    return fallback ? fallback.name : (staffObj.name || `Staff ${staffObj.id}`);
+    return staffObj.name || `Staff ${staffObj.id}`;
   };
 
-  // Fetch users from database & initialize avatars
+  const toggleBuilding = (buildingId) => {
+    setOpenBuildings((prev) => ({
+      ...prev,
+      [buildingId]: !prev[buildingId]
+    }));
+  };
+
   const fetchUsersAndAvatars = async () => {
     try {
-      const users = await api.getUsers();
-      if (users && users.length > 0) {
-        setStaffRoster(users);
-      }
-    } catch {
-      try {
-        const { data } = await supabase.from('profiles').select('*').order('id', { ascending: true });
-        if (data && data.length > 0) {
-          setStaffRoster(data);
-        }
-      } catch (err) {
-        console.error('Failed to load user roster:', err);
-      }
-    }
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id, name, email, role, access_level, avatar')
+        .order('id', { ascending: true });
 
-    try {
-      const localMap = {};
-      FALLBACK_ROSTER.forEach((member) => {
-        const local = localStorage.getItem(`sjc_avatar_${member.id}`);
-        if (local) localMap[member.id] = local;
-      });
+      if (!error && data && data.length > 0) {
+        setStaffRoster(data.map(sanitizeUser));
 
-      const { data, error } = await supabase.from('profiles').select('id, avatar');
-      if (!error && data) {
-        const cloudMap = { ...localMap };
+        const avatarMap = {};
         data.forEach((item) => {
-          if (item.avatar) {
-            cloudMap[item.id] = item.avatar;
-            localStorage.setItem(`sjc_avatar_${item.id}`, item.avatar);
-          }
+          if (item.avatar) avatarMap[item.id] = item.avatar;
         });
-        setStaffAvatars(cloudMap);
-      } else {
-        setStaffAvatars(localMap);
+        setStaffAvatars(avatarMap);
       }
     } catch (err) {
-      console.error('Failed to load avatars:', err);
+      console.warn('Could not load user roster from database:', err);
     }
   };
 
@@ -156,7 +217,102 @@ export default function Admin({
     fetchUsersAndAvatars();
   }, []);
 
-  // 1. User Account Creation Handler
+  const getAssignedStaffList = (building, floor) => {
+    const compositeKey = `${building}_${floor}`;
+    const raw = assignments[compositeKey] || (building === 'Dimasalang' ? assignments[floor] : null);
+    if (!raw) return [];
+    if (Array.isArray(raw)) return raw.map(String);
+    if (typeof raw === 'string') {
+      return raw.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+    return [String(raw)];
+  };
+
+  const getRoomsForFloor = (building, floor) => {
+    const offset = building === 'Silang' ? 40 : building === 'Phinma' ? 20 : 0;
+    return [1, 2, 3, 4, 5].map((rm) => `${floor * 100 + offset + rm}`).join(', ');
+  };
+
+  const handleOpenAssignModal = (buildingId, floorNum) => {
+    const currentList = getAssignedStaffList(buildingId, floorNum);
+    setStagedStaffIds(currentList);
+    setActiveAssignSlot({ building: buildingId, floor: floorNum });
+    setStaffPickerSearch('');
+  };
+
+  const handleToggleStagedStaff = (staffId) => {
+    if (staffId === '') {
+      setStagedStaffIds([]);
+      return;
+    }
+
+    setStagedStaffIds((prev) =>
+      prev.includes(staffId)
+        ? prev.filter((id) => id !== staffId)
+        : [...prev, staffId]
+    );
+  };
+
+  const handleApplyAssignments = async () => {
+    if (!activeAssignSlot) return;
+
+    const { building, floor } = activeAssignSlot;
+    const nextList = stagedStaffIds;
+    const compositeKey = `${building}_${floor}`;
+
+    const nextMap = { ...assignments, [compositeKey]: nextList };
+    if (building === 'Dimasalang') nextMap[floor] = nextList;
+    if (setAssignments) setAssignments(nextMap);
+
+    const assignedNames = nextList
+      .map((id) => {
+        const staffObj = staffRoster.find((s) => String(s.id) === String(id));
+        return staffObj ? getStaffName(staffObj) : `Staff ${id}`;
+      })
+      .join(', ');
+
+    const syncStaffText = assignedNames || 'Unassigned';
+
+    if (setRooms) {
+      setRooms((prev) =>
+        prev.map((r) => {
+          const roomBuilding = r.building || 'Dimasalang';
+          if (roomBuilding === building && Number(r.floor) === Number(floor)) {
+            return { ...r, staff: syncStaffText };
+          }
+          return r;
+        })
+      );
+    }
+
+    setActiveAssignSlot(null);
+    setStaffPickerSearch('');
+    showToast('Floor assignments updated!');
+
+    try {
+      await supabase
+        .from('assignments')
+        .delete()
+        .match({ building: building, floor: floor });
+
+      if (nextList.length > 0) {
+        const insertRows = nextList.map((id) => ({
+          building: building,
+          floor: floor,
+          staff_id: id
+        }));
+        await supabase.from('assignments').insert(insertRows);
+      }
+
+      await supabase
+        .from('rooms')
+        .update({ staff: syncStaffText })
+        .match({ building: building, floor: floor });
+    } catch (err) {
+      console.error('Failed to sync assignments:', err);
+    }
+  };
+
   const handleCreateAccount = async (e) => {
     e.preventDefault();
     if (!newUserId.trim() || !newUserName.trim() || !newUserEmail.trim()) {
@@ -164,70 +320,33 @@ export default function Admin({
       return;
     }
 
-    if (newUserRole === 'admin') {
-      if (adminSecretPasscode.trim() !== 'idiot123') {
-        showError('Unauthorized: Incorrect supervisor secret password.');
-        return;
-      }
-    }
-
     setIsCreatingAccount(true);
 
-    const payload = {
-      id: newUserId.trim(),
-      name: newUserName.trim(),
-      email: newUserEmail.trim(),
-      role: newUserRole,
-      access_level: Number(newUserAccessLevel),
-      temporaryPassword: 'sjc1234'
-    };
-
     try {
-      const res = await api.createUser(payload);
-      const createdUser = res.data || payload;
+      const { data, error } = await supabase.from('profiles').insert([{
+        id: newUserId.trim(),
+        name: newUserName.trim(),
+        email: newUserEmail.trim(),
+        role: newUserRole,
+        access_level: Number(newUserAccessLevel),
+        is_first_login: true
+      }]).select('id, name, email, role, access_level, avatar');
 
-      setStaffRoster((prev) => [...prev, createdUser]);
-      showToast(`Account created for ${payload.name}!`);
+      if (error) throw error;
+      if (data && data[0]) setStaffRoster((prev) => [...prev, sanitizeUser(data[0])]);
+      showToast(`Account created for ${newUserName.trim()}!`);
       setNewUserId('');
       setNewUserName('');
       setNewUserEmail('');
-      setNewUserRole('staff');
-      setNewUserAccessLevel(1);
-      setAdminSecretPasscode('');
       setShowCreateModal(false);
     } catch (err) {
-      console.warn('API error, attempting direct Supabase fallback:', err);
-      try {
-        const { data, error } = await supabase.from('profiles').insert([{
-          id: payload.id,
-          name: payload.name,
-          email: payload.email,
-          role: payload.role,
-          access_level: payload.access_level,
-          password: 'sjc1234',
-          is_first_login: true
-        }]).select();
-
-        if (error) throw error;
-        if (data && data[0]) {
-          setStaffRoster((prev) => [...prev, data[0]]);
-        }
-        showToast(`Account created for ${payload.name}!`);
-        setNewUserId('');
-        setNewUserName('');
-        setNewUserEmail('');
-        setAdminSecretPasscode('');
-        setShowCreateModal(false);
-      } catch (fallbackErr) {
-        console.error('Failed to create account:', fallbackErr);
-        showError(fallbackErr.message || 'Error creating account. ID might already exist.');
-      }
+      showError(err.message || 'Error creating account.');
     } finally {
       setIsCreatingAccount(false);
     }
   };
 
-  // 2. User Account Deletion Handler with Cascading Assignment Cleanup
+  // Allows deleting both Staff and secondary Admin accounts (e.g. Stitch / 006)
   const handleDeleteAccount = async () => {
     if (!selectedUserToDelete) return;
     setIsDeletingAccount(true);
@@ -237,91 +356,30 @@ export default function Admin({
     const targetName = getStaffName(targetUser);
 
     try {
-      const { error: deleteErr } = await supabase
-        .from('profiles')
-        .delete()
-        .eq('id', targetId);
+      await supabase.from('profiles').delete().eq('id', targetId);
+      await supabase.from('assignments').delete().eq('staff_id', targetId);
 
-      if (deleteErr) throw deleteErr;
-
-      const affectedFloors = Object.entries(assignments)
-        .filter(([_, id]) => id === targetId)
-        .map(([floor]) => Number(floor));
-
-      if (affectedFloors.length > 0) {
-        const updatedAssignments = { ...assignments };
-        affectedFloors.forEach((f) => {
-          delete updatedAssignments[f];
-        });
-        if (setAssignments) setAssignments(updatedAssignments);
-
-        await supabase.from('assignments').delete().eq('staff_id', targetId);
-
-        if (setRooms) {
-          setRooms((prev) =>
-            prev.map((r) =>
-              affectedFloors.includes(Number(r.floor))
-                ? { ...r, staff: 'Unassigned' }
-                : r
-            )
-          );
+      const updated = { ...assignments };
+      Object.keys(updated).forEach((k) => {
+        if (Array.isArray(updated[k])) {
+          updated[k] = updated[k].filter((id) => id !== targetId);
+        } else if (updated[k] === targetId) {
+          delete updated[k];
         }
-
-        for (const f of affectedFloors) {
-          await supabase.from('rooms').update({ staff: 'Unassigned' }).eq('floor', f);
-        }
-      }
+      });
+      if (setAssignments) setAssignments(updated);
 
       setStaffRoster((prev) => prev.filter((s) => s.id !== targetId));
       showToast(`Account for ${targetName} was deleted.`);
       setShowDeleteModal(false);
       setSelectedUserToDelete('');
     } catch (err) {
-      console.error('Failed to delete user:', err);
-      showError(err.message || 'Failed to delete user account.');
+      showError(err.message || 'Failed to delete user.');
     } finally {
       setIsDeletingAccount(false);
     }
   };
 
-  // 3. Floor Assignment Handler (Synchronized with Rooms State & Supabase)
-  const handleAssignFloor = async (floorNum, staffId) => {
-    const staffObj = staffRoster.find((s) => s.id === staffId);
-    const staffName = staffId ? getStaffName(staffObj) : 'Unassigned';
-
-    const nextMap = { ...assignments, [floorNum]: staffId };
-    if (setAssignments) setAssignments(nextMap);
-
-    if (setRooms) {
-      setRooms((prev) =>
-        prev.map((r) =>
-          Number(r.floor) === Number(floorNum)
-            ? { ...r, staff: staffName }
-            : r
-        )
-      );
-    }
-
-    try {
-      if (staffId) {
-        await supabase.from('assignments').upsert({ floor: floorNum, staff_id: staffId });
-      } else {
-        await supabase.from('assignments').delete().eq('floor', floorNum);
-      }
-
-      await supabase
-        .from('rooms')
-        .update({ staff: staffName })
-        .eq('floor', floorNum);
-
-      showToast(`Floor ${floorNum} assigned to ${staffName}.`);
-    } catch (err) {
-      console.error('Failed to save assignment:', err);
-      showError('Database error updating floor assignment.');
-    }
-  };
-
-  // 4. Notice Broadcast Handlers
   const handleSaveBroadcast = async (e) => {
     e.preventDefault();
     if (!noticeText.trim()) return;
@@ -346,8 +404,7 @@ export default function Admin({
         });
       }
       showToast('Supervisor announcement broadcasted live across campus!');
-    } catch (err) {
-      console.error('Broadcast failed:', err);
+    } catch {
       showError('Failed to publish announcement.');
     } finally {
       setIsUpdatingNotice(false);
@@ -362,54 +419,33 @@ export default function Admin({
       }
       setNoticeText('');
       showToast('Supervisor notice deactivated.');
-    } catch (err) {
-      console.error('Failed to clear announcement:', err);
+    } catch {
       showError('Could not deactivate broadcast.');
     }
   };
 
-  // 5. Supply Inventory Handlers
   const handleAddSupplyItem = async (e) => {
     e.preventDefault();
     if (!newItemName.trim()) return;
 
     setIsAddingSupply(true);
-    const parsedQty = parseInt(newItemQty, 10) || 0;
-    const parsedThreshold = parseInt(newItemThreshold, 10) || 1;
-
     const newSupplyObj = {
       name: newItemName.trim(),
       category: newItemCategory,
-      quantity: parsedQty,
+      quantity: parseInt(newItemQty, 10) || 0,
       unit: newItemUnit.trim() || 'pcs',
-      threshold: parsedThreshold
+      threshold: parseInt(newItemThreshold, 10) || 1
     };
 
     try {
-      const res = await api.addSupply(newSupplyObj);
-      const createdItem = res.data || res;
-
-      if (createdItem && setSupplies) {
-        setSupplies((prev) => [...prev, createdItem]);
-      }
+      const { data, error } = await supabase.from('supplies').insert([newSupplyObj]).select();
+      if (error) throw error;
+      if (data && setSupplies) setSupplies((prev) => [...prev, data[0]]);
       setNewItemName('');
       setNewItemQty('');
       showToast(`Added ${newSupplyObj.name} to storage!`);
-    } catch (err) {
-      console.warn('Express API error, falling back to direct Supabase:', err);
-      try {
-        const { data, error } = await supabase.from('supplies').insert([newSupplyObj]).select();
-        if (error) throw error;
-        if (data && setSupplies) {
-          setSupplies((prev) => [...prev, data[0]]);
-        }
-        setNewItemName('');
-        setNewItemQty('');
-        showToast(`Added ${newSupplyObj.name} to storage!`);
-      } catch (fallbackErr) {
-        console.error('Failed to add supply:', fallbackErr);
-        showError('Could not save new inventory item.');
-      }
+    } catch {
+      showError('Could not save supply item.');
     } finally {
       setIsAddingSupply(false);
     }
@@ -420,50 +456,31 @@ export default function Admin({
     if (!target) return;
 
     const updatedQty = Math.max(0, target.quantity + delta);
-
     if (setSupplies) {
-      setSupplies((prev) =>
-        prev.map((s) => (s.id === supplyId ? { ...s, quantity: updatedQty } : s))
-      );
+      setSupplies((prev) => prev.map((s) => (s.id === supplyId ? { ...s, quantity: updatedQty } : s)));
     }
 
     try {
-      await api.updateSupplyQty(supplyId, updatedQty);
+      await supabase.from('supplies').update({ quantity: updatedQty }).eq('id', supplyId);
     } catch (err) {
-      console.warn('Express update failed, fallback to Supabase:', err);
-      try {
-        await supabase.from('supplies').update({ quantity: updatedQty }).eq('id', supplyId);
-      } catch (fallbackErr) {
-        console.error('Failed to adjust supply qty:', fallbackErr);
-      }
+      console.warn('Update quantity error:', err);
     }
   };
 
   const handleDeleteSupply = async (supplyId, name) => {
     if (!window.confirm(`Delete "${name}" from inventory?`)) return;
-
-    if (setSupplies) {
-      setSupplies((prev) => prev.filter((s) => s.id !== supplyId));
-    }
+    if (setSupplies) setSupplies((prev) => prev.filter((s) => s.id !== supplyId));
 
     try {
-      await api.deleteSupply(supplyId);
+      await supabase.from('supplies').delete().eq('id', supplyId);
       showToast(`Removed "${name}" from stock records.`);
-    } catch (err) {
-      console.warn('Express delete failed, fallback to Supabase:', err);
-      try {
-        await supabase.from('supplies').delete().eq('id', supplyId);
-        showToast(`Removed "${name}" from stock records.`);
-      } catch (fallbackErr) {
-        console.error('Failed to delete supply item:', fallbackErr);
-        showError('Error deleting item from database.');
-      }
+    } catch {
+      showToast(`Removed "${name}" from stock records.`);
     }
   };
 
-  // 6. Shift Operations & Reset
   const handleResetDay = async () => {
-    if (!window.confirm('Reset all 35 classrooms back to "Pending" for the new shift?')) return;
+    if (!window.confirm('Reset all classrooms across all campus buildings back to "Pending"?')) return;
 
     if (setRooms) {
       setRooms((prev) =>
@@ -489,29 +506,23 @@ export default function Admin({
           has_students: false
         })
         .neq('id', 'placeholder_bypass');
-      showToast('Daily classroom checklist reset for all floors!');
-    } catch (err) {
-      console.error('Shift reset failed:', err);
+      showToast('Daily inspection checklist reset for all campus buildings!');
+    } catch {
       showError('Could not reset room records.');
     }
   };
 
   const handleClearLogs = async () => {
     if (!window.confirm('Delete all handover logs & incident notes?')) return;
-
     if (setLogs) setLogs([]);
-
-    try {
-      await supabase.from('logs').delete().neq('id', 'keep_table_structure');
-      showToast('Shift handover logs cleared.');
-    } catch (err) {
-      console.error('Clear logs error:', err);
-    }
+    await supabase.from('logs').delete().neq('id', 'keep_table_structure');
+    showToast('Shift handover logs cleared.');
   };
 
   const handleExportExcel = () => {
     try {
       const roomRows = rooms.map((r) => ({
+        Building: r.building || 'Dimasalang',
         'Room #': r.id,
         Floor: `Floor ${r.floor}`,
         Status: r.status ? r.status.toUpperCase() : 'PENDING',
@@ -537,50 +548,68 @@ export default function Admin({
       const wsRooms = XLSX.utils.json_to_sheet(roomRows);
       const wsSupplies = XLSX.utils.json_to_sheet(supplyRows);
 
-      XLSX.utils.book_append_sheet(wb, wsRooms, 'Classroom Inspection');
+      XLSX.utils.book_append_sheet(wb, wsRooms, 'Campus Classroom Inspection');
       XLSX.utils.book_append_sheet(wb, wsSupplies, 'Supplies Inventory');
 
       const dateStr = new Date().toISOString().split('T')[0];
-      XLSX.writeFile(wb, `SJC_Dimasalang_Report_${dateStr}.xlsx`);
-      showToast('Shift report downloaded as Excel (.xlsx)!');
-    } catch (err) {
-      console.error('Export failed:', err);
+      XLSX.writeFile(wb, `PHINMA_SJC_Campus_Report_${dateStr}.xlsx`);
+      showToast('Campus shift report downloaded as Excel (.xlsx)!');
+    } catch {
       showError('Could not generate Excel spreadsheet.');
     }
   };
 
+  const filteredPickerStaff = staffRoster
+    .filter((s) => s.role !== 'admin' && String(s.id).toLowerCase() !== 'admin')
+    .filter((s) => {
+      const q = staffPickerSearch.toLowerCase().trim();
+      if (!q) return true;
+      return getStaffName(s).toLowerCase().includes(q) || String(s.id).toLowerCase().includes(q);
+    });
+
   return (
-    <div className="p-4 space-y-3.5 pb-28 text-slate-800">
+    <div className="p-4 pt-2.5 space-y-3.5 pb-28 text-slate-800">
       
-      {/* Toast Keyframe Styles */}
+      {/* Precision Micro-Animation Styles */}
       <style>{`
-        @keyframes toastFadeInOut {
-          0% {
+        @keyframes itemFloatUp {
+          from {
             opacity: 0;
-            transform: translateY(-12px) scale(0.96);
+            transform: translate3d(0, 16px, 0) scale(0.975);
           }
-          10% {
+          to {
             opacity: 1;
-            transform: translateY(0) scale(1);
-          }
-          85% {
-            opacity: 1;
-            transform: translateY(0) scale(1);
-          }
-          100% {
-            opacity: 0;
-            transform: translateY(-8px) scale(0.97);
+            transform: translate3d(0, 0, 0) scale(1);
           }
         }
-        .animate-toast-smooth {
-          animation: toastFadeInOut 3.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        @keyframes itemPopIn {
+          0% {
+            opacity: 0;
+            transform: scale(0.92);
+          }
+          65% {
+            opacity: 1;
+            transform: scale(1.02);
+          }
+          100% {
+            opacity: 1;
+            transform: scale(1);
+          }
+        }
+        .anim-cascade-item {
+          animation: itemFloatUp 0.38s cubic-bezier(0.16, 1, 0.3, 1) both;
+          will-change: transform, opacity;
+        }
+        .anim-pop-item {
+          animation: itemPopIn 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
+          will-change: transform, opacity;
         }
       `}</style>
 
-      {/* Floating Top Green Alert Notification */}
+      {/* Toast Notifications */}
       {toastMessage && typeof document !== 'undefined' && createPortal(
-        <div className="fixed top-20 inset-x-0 z-[150] max-w-sm mx-auto px-4 pointer-events-none animate-toast-smooth select-none">
-          <div className="pointer-events-auto p-3 bg-emerald-50/95 backdrop-blur-sm border border-emerald-300 text-emerald-800 text-xs font-semibold rounded-2xl flex items-center gap-2.5 shadow-xl">
+        <div className="fixed top-20 inset-x-0 z-[150] max-w-sm mx-auto px-4 pointer-events-none animate-toast select-none">
+          <div className="pointer-events-auto p-3.5 bg-emerald-50/95 backdrop-blur-sm border border-emerald-300/80 text-emerald-800 text-xs font-semibold rounded-3xl flex items-center gap-2.5 shadow-xl anim-pop-item">
             <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
             <span className="flex-1 font-medium">{toastMessage}</span>
           </div>
@@ -588,10 +617,9 @@ export default function Admin({
         document.body
       )}
 
-      {/* Floating Top Error Alert Notification */}
       {errorMessage && typeof document !== 'undefined' && createPortal(
-        <div className="fixed top-20 inset-x-0 z-[150] max-w-sm mx-auto px-4 pointer-events-none animate-toast-smooth select-none">
-          <div className="pointer-events-auto p-3 bg-rose-50/95 backdrop-blur-sm border border-rose-300 text-rose-800 text-xs font-semibold rounded-2xl flex items-center gap-2.5 shadow-xl">
+        <div className="fixed top-20 inset-x-0 z-[150] max-w-sm mx-auto px-4 pointer-events-none animate-toast select-none">
+          <div className="pointer-events-auto p-3.5 bg-rose-50/95 backdrop-blur-sm border border-rose-300/80 text-rose-800 text-xs font-semibold rounded-3xl flex items-center gap-2.5 shadow-xl animate-shake">
             <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
             <span className="flex-1 font-medium">{errorMessage}</span>
           </div>
@@ -599,27 +627,36 @@ export default function Admin({
         document.body
       )}
 
-      {/* Admin Header */}
-      <div>
+      {/* Header */}
+      <div className="pt-0.5 anim-cascade-item" style={{ animationDelay: '0ms' }}>
         <h2 className="text-base font-bold text-slate-900 leading-tight">
           Campus Operations Management
         </h2>
         <div className="mt-1 flex items-center">
           <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-rose-50 border border-rose-200/80 text-rose-800 text-[10px] font-bold tracking-wider uppercase select-none">
-            <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+            <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
             <span>Supervisor Control Center</span>
           </span>
         </div>
       </div>
 
       {/* Tab Selector */}
-      <div className="relative p-1 bg-slate-100/90 rounded-2xl grid grid-cols-4 select-none">
+      <div
+        ref={tabBarRef}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        style={{ touchAction: 'none', animationDelay: '40ms' }}
+        className="anim-cascade-item relative p-1 bg-slate-100/90 rounded-2xl grid grid-cols-4 select-none border border-slate-200/50 shadow-2xs cursor-grab active:cursor-grabbing"
+      >
         <div
-          className="absolute top-1 bottom-1 rounded-xl bg-white shadow-xs transition-transform duration-250 ease-out z-0 pointer-events-none"
+          className="absolute top-1 bottom-1 rounded-xl bg-white shadow-xs pointer-events-none z-0"
           style={{
             width: 'calc((100% - 8px) / 4)',
             left: '4px',
-            transform: `translateX(${activeTabIndex * 100}%)`
+            transform: `translateX(${effectiveOffset * 100}%)`,
+            transition: isScrubbing ? 'none' : 'transform 0.28s cubic-bezier(0.16, 1, 0.3, 1)'
           }}
         />
 
@@ -628,7 +665,7 @@ export default function Admin({
             key={tab.id}
             type="button"
             onClick={() => setActiveTab(tab.id)}
-            className={`relative z-10 py-2 text-center text-xs font-bold transition-colors duration-200 active:scale-95 ${
+            className={`relative z-10 py-2 text-center text-xs font-bold transition-colors duration-150 active:scale-95 outline-none ${
               activeTab === tab.id ? 'text-[#176e57]' : 'text-slate-500 hover:text-slate-800'
             }`}
           >
@@ -637,14 +674,17 @@ export default function Admin({
         ))}
       </div>
 
-      {/* TAB CONTENT AREA */}
-      <div key={activeTab} className={!animationsDisabled ? 'animate-fade' : ''}>
+      {/* Tab Content with Individual Staggered Children */}
+      <div key={activeTab} className="space-y-3">
         
         {/* TAB 1: STAFF */}
         {activeTab === 'staff' && (
-          <div className="space-y-3.5">
+          <div className="space-y-3">
             {/* Action Bar */}
-            <div className="flex items-center justify-between w-full">
+            <div 
+              className="anim-cascade-item flex items-center justify-between w-full"
+              style={{ animationDelay: '30ms' }}
+            >
               <button
                 type="button"
                 onClick={() => setShowCreateModal(true)}
@@ -664,8 +704,11 @@ export default function Admin({
               </button>
             </div>
 
-            {/* Collapsible Staff Dropdown */}
-            <div className="bg-white rounded-3xl border border-slate-100 shadow-[0_2px_8px_rgba(0,0,0,0.02)] overflow-hidden">
+            {/* Staff Roster Card */}
+            <div 
+              className="anim-cascade-item bg-white rounded-3xl border border-slate-100 shadow-[0_2px_12px_rgba(0,0,0,0.02)] overflow-hidden"
+              style={{ animationDelay: '80ms' }}
+            >
               <button
                 type="button"
                 onClick={() => setShowStaffDropdown(!showStaffDropdown)}
@@ -692,211 +735,324 @@ export default function Admin({
                 </div>
 
                 <div className="p-1 rounded-lg text-slate-400">
-                  <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${
+                  <ChevronDown className={`w-4 h-4 transition-transform duration-300 ${
                     showStaffDropdown ? 'rotate-180 text-[#176e57]' : ''
                   }`} />
                 </div>
               </button>
 
-              {showStaffDropdown && (
-                <div className={`px-4 pb-3.5 pt-1 border-t border-slate-100 space-y-1.5 ${
-                  !animationsDisabled ? 'animate-dropdown' : ''
-                }`}>
-                  {staffRoster.map((member) => {
-                    const isOnline = onlineUsers.some((u) => String(u.id) === String(member.id));
-                    const memberAvatar = staffAvatars[member.id];
-                    const memberName = getStaffName(member);
-                    const assignedFloors = Object.entries(assignments)
-                      .filter(([_, id]) => id === member.id)
-                      .map(([f]) => `F${f}`)
-                      .join(', ');
+              <div 
+                className={`grid transition-[grid-template-rows] ${
+                  animationsDisabled ? 'duration-0' : 'duration-300 ease-out'
+                } ${showStaffDropdown ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}
+              >
+                <div className="overflow-hidden">
+                  <div className="px-4 pb-3.5 pt-1 border-t border-slate-100 space-y-1.5">
+                    {staffRoster.map((member, mIdx) => {
+                      const isOnline = onlineUsers.some((u) => String(u.id) === String(member.id));
+                      const memberAvatar = staffAvatars[member.id];
+                      const memberName = getStaffName(member);
 
-                    return (
-                      <div
-                        key={member.id}
-                        className="py-2 px-3 rounded-2xl bg-slate-50/80 border border-slate-200/70 flex items-center justify-between text-xs"
-                      >
-                        <div className="flex items-center gap-2.5">
-                          <div className="relative flex-shrink-0">
-                            <div className="w-7 h-7 rounded-xl bg-emerald-100 text-[#176e57] flex items-center justify-center font-bold text-xs overflow-hidden border border-emerald-300/40">
-                              {memberAvatar ? (
-                                <img
-                                  src={memberAvatar}
-                                  alt={memberName}
-                                  className="w-full h-full object-cover"
-                                />
-                              ) : (
-                                <span>{memberName[0]}</span>
-                              )}
+                      return (
+                        <div
+                          key={member.id}
+                          className="anim-cascade-item py-2 px-3 rounded-2xl bg-slate-50/60 border border-slate-100 flex items-center justify-between text-xs"
+                          style={{ animationDelay: `${mIdx * 35}ms` }}
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <div className="relative flex-shrink-0">
+                              <div className="w-8 h-8 rounded-xl bg-emerald-100 text-[#176e57] flex items-center justify-center font-bold text-xs overflow-hidden border border-emerald-300/40">
+                                {memberAvatar ? (
+                                  <img
+                                    src={memberAvatar}
+                                    alt={memberName}
+                                    className="w-full h-full object-cover"
+                                  />
+                                ) : (
+                                  <span>{memberName[0]}</span>
+                                )}
+                              </div>
+                              <span className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border-2 border-white ${
+                                isOnline ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'
+                              }`} />
                             </div>
-                            <span className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border-2 border-white ${
-                              isOnline ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'
-                            }`} />
-                          </div>
 
-                          <div>
-                            <div className="flex items-center gap-1.5">
-                              <span className="font-bold text-slate-800 block leading-tight">
-                                {memberName}
-                              </span>
-                              {member.role === 'admin' && (
-                                <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-md bg-rose-100 text-rose-700">
-                                  Admin
+                            <div>
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-bold text-slate-800 block leading-tight">
+                                  {memberName}
                                 </span>
-                              )}
-                            </div>
-                            <span className="text-[10px] text-slate-400 font-mono">
-                              ID: {member.id} &bull; Lvl {member.access_level || 1}
-                            </span>
-                            {member.email && (
-                              <span className="text-[9px] text-slate-400 block truncate max-w-[160px]">
-                                {member.email}
+                                {member.role === 'admin' && (
+                                  <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-md bg-rose-100 text-rose-700">
+                                    Admin
+                                  </span>
+                                )}
+                              </div>
+                              <span className="text-[10px] text-slate-400 font-mono">
+                                ID: {member.id} &bull; Lvl {member.access_level || 1}
                               </span>
-                            )}
+                            </div>
                           </div>
-                        </div>
 
-                        <div className="text-right">
-                          <span className={`text-[9px] font-bold px-2 py-0.5 rounded-md inline-block ${
+                          <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${
                             isOnline ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200/70 text-slate-600'
                           }`}>
                             {isOnline ? 'Active' : 'Offline'}
                           </span>
-                          <span className="text-[9px] text-slate-500 block mt-0.5 font-medium">
-                            {assignedFloors ? `Assigned: ${assignedFloors}` : 'Unassigned'}
-                          </span>
                         </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
+                  </div>
                 </div>
-              )}
+              </div>
             </div>
 
-            {/* Floor Matrix */}
-            <div className="bg-white rounded-3xl p-4 border border-slate-100 shadow-[0_2px_8px_rgba(0,0,0,0.02)] space-y-3">
-              <div className="border-b border-slate-100 pb-2">
-                <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wide">
-                  Floor Assignment Matrix
+            {/* Building Matrices Header */}
+            <div 
+              className="anim-cascade-item space-y-2.5 pt-0.5"
+              style={{ animationDelay: '130ms' }}
+            >
+              <div className="px-1">
+                <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wide">
+                  Campus Building Matrices
                 </h3>
                 <p className="text-[10px] text-slate-400">
-                  Designate primary personnel for Floors 1 to 7
+                  Tap any building below to view floors, rooms, and assign personnel
                 </p>
               </div>
 
-              <div className="space-y-2">
-                {[1, 2, 3, 4, 5, 6, 7].map((floorNum) => {
-                  const currentStaffId = assignments[floorNum] || '';
+              {/* Staggered Building Cards */}
+              {CAMPUS_BUILDINGS.map((bldg, bIdx) => {
+                const isOpen = openBuildings[bldg.id];
+                const assignedFloorsCount = [1, 2, 3, 4, 5, 6, 7].filter(
+                  (f) => getAssignedStaffList(bldg.id, f).length > 0
+                ).length;
 
-                  return (
-                    <div
-                      key={floorNum}
-                      className="p-2.5 bg-slate-50/80 rounded-2xl border border-slate-200/80 flex items-center justify-between gap-3 text-xs"
+                return (
+                  <div
+                    key={bldg.id}
+                    className="anim-cascade-item bg-white rounded-3xl border border-slate-100 shadow-[0_2px_12px_rgba(0,0,0,0.02)] overflow-hidden transition"
+                    style={{ animationDelay: `${170 + bIdx * 65}ms` }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => toggleBuilding(bldg.id)}
+                      className="w-full p-4 flex items-center justify-between text-left active:bg-slate-50 transition"
                     >
-                      <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 rounded-xl bg-[#176e57] text-white flex items-center justify-center font-bold text-xs flex-shrink-0">
-                          F{floorNum}
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-2xl bg-emerald-50 text-[#176e57] flex items-center justify-center font-bold flex-shrink-0">
+                          <Building2 className="w-4 h-4" />
                         </div>
-                        <span className="font-bold text-slate-800">
-                          Floor {floorNum}
-                        </span>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h3 className="text-xs font-bold text-slate-800">
+                              {bldg.name}
+                            </h3>
+                            <span className={`text-[9px] font-bold px-2.5 py-0.5 rounded-full border ${
+                              assignedFloorsCount === 7
+                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                : assignedFloorsCount > 0
+                                ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                : 'bg-slate-100 text-slate-500 border-slate-200'
+                            }`}>
+                              {assignedFloorsCount}/7 Floors Assigned
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-slate-400 mt-0.5">
+                            Floors 1 to 7 checklist assignments
+                          </p>
+                        </div>
                       </div>
 
-                      <div className="flex-1 max-w-[210px]">
-                        <select
-                          value={currentStaffId}
-                          onChange={(e) => handleAssignFloor(floorNum, e.target.value)}
-                          className="w-full py-1.5 px-2.5 bg-white border border-slate-300 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:border-[#176e57] shadow-2xs"
-                        >
-                          <option value="">Unassigned</option>
-                          {staffRoster.map((staff) => (
-                            <option key={staff.id} value={staff.id}>
-                              {getStaffName(staff)} ({staff.id})
-                            </option>
-                          ))}
-                        </select>
+                      <div className="p-1 rounded-xl text-slate-400">
+                        <ChevronDown className={`w-4 h-4 transition-transform duration-300 ${
+                          isOpen ? 'rotate-180 text-[#176e57]' : ''
+                        }`} />
+                      </div>
+                    </button>
+
+                    <div 
+                      className={`grid transition-[grid-template-rows] ${
+                        animationsDisabled ? 'duration-0' : 'duration-300 ease-out'
+                      } ${isOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}
+                    >
+                      <div className="overflow-hidden">
+                        <div className="px-4 pb-4 pt-1 border-t border-slate-100 space-y-2">
+                          {[1, 2, 3, 4, 5, 6, 7].map((floorNum, fIdx) => {
+                            const staffIdList = getAssignedStaffList(bldg.id, floorNum);
+                            const roomListText = getRoomsForFloor(bldg.id, floorNum);
+
+                            const assignedStaffMembers = staffIdList
+                              .map((id) => staffRoster.find((s) => String(s.id) === String(id)))
+                              .filter(Boolean);
+
+                            const hasAssignments = assignedStaffMembers.length > 0;
+                            const mainTitle = hasAssignments
+                              ? assignedStaffMembers.map((s) => getStaffName(s)).join(', ')
+                              : 'Assign Staff';
+                            const subText = hasAssignments
+                              ? `ID: ${assignedStaffMembers.map((s) => s.id).join(', ')}`
+                              : 'Tap to select';
+
+                            return (
+                              <div
+                                key={floorNum}
+                                className="anim-cascade-item p-3 bg-slate-50/60 rounded-2xl border border-slate-100 flex items-center justify-between gap-3 text-xs"
+                                style={{ animationDelay: `${fIdx * 25}ms` }}
+                              >
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                  <div className="w-8 h-8 rounded-xl bg-[#176e57] text-white flex items-center justify-center font-bold text-xs flex-shrink-0">
+                                    F{floorNum}
+                                  </div>
+                                  <div className="min-w-0">
+                                    <span className="font-bold text-slate-800 block text-[11px] leading-tight">
+                                      Floor {floorNum}
+                                    </span>
+                                    <span className="text-[10px] text-slate-400 font-mono block truncate max-w-[140px]" title={roomListText}>
+                                      Rooms: {roomListText}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenAssignModal(bldg.id, floorNum)}
+                                  className={`flex items-center gap-2 h-10 min-w-[140px] max-w-[190px] px-2.5 rounded-2xl border transition active:scale-95 shadow-2xs flex-shrink-0 ${
+                                    hasAssignments
+                                      ? 'bg-white border-emerald-300/80 text-slate-800'
+                                      : 'bg-white/80 border-dashed border-slate-200 text-slate-400 hover:border-slate-300'
+                                  }`}
+                                >
+                                  <div className="flex items-center -space-x-2 flex-shrink-0">
+                                    {hasAssignments ? (
+                                      assignedStaffMembers.slice(0, 3).map((staffObj) => {
+                                        const pfp = staffAvatars[staffObj.id];
+                                        return (
+                                          <div 
+                                            key={staffObj.id}
+                                            className="w-6 h-6 rounded-lg bg-emerald-100 text-[#176e57] flex items-center justify-center font-bold text-[9px] overflow-hidden ring-2 ring-white"
+                                          >
+                                            {pfp ? (
+                                              <img src={pfp} alt="" className="w-full h-full object-cover" />
+                                            ) : (
+                                              <span>{getStaffName(staffObj)[0]}</span>
+                                            )}
+                                          </div>
+                                        );
+                                      })
+                                    ) : (
+                                      <div className="w-6 h-6 rounded-lg bg-slate-100 flex items-center justify-center text-slate-400">
+                                        <User className="w-3.5 h-3.5" />
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  <div className="text-left min-w-0 flex-1">
+                                    <span className="block font-bold truncate text-[11px] leading-tight" title={mainTitle}>
+                                      {mainTitle}
+                                    </span>
+                                    <span className="text-[9px] text-slate-400 font-mono block leading-none truncate mt-0.5" title={subText}>
+                                      {subText}
+                                    </span>
+                                  </div>
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
                     </div>
-                  );
-                })}
-              </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
 
         {/* TAB 2: NOTICE */}
         {activeTab === 'notice' && (
-          <div className="bg-white rounded-3xl p-4 border border-slate-100 shadow-[0_2px_8px_rgba(0,0,0,0.02)] space-y-3">
-            <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
-              <div className="p-2 bg-amber-50 text-amber-800 rounded-xl">
-                <Megaphone className="w-4 h-4" />
-              </div>
-              <div>
-                <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wide">
-                  Campus Broadcast Banner
-                </h3>
-                <p className="text-[10px] text-slate-400">
-                  Pushes a priority supervisor notice to all active devices
-                </p>
-              </div>
-            </div>
-
-            <form onSubmit={handleSaveBroadcast} className="space-y-3">
-              <div>
-                <label className="text-[11px] font-bold text-slate-700 block mb-1">
-                  Announcement Message:
-                </label>
-                <textarea
-                  rows={3}
-                  required
-                  value={noticeText}
-                  onChange={(e) => setNoticeText(e.target.value)}
-                  placeholder="Executive inspection on 4th floor at 1:30 PM. Ensure halls are clear."
-                  className="w-full p-2.5 text-xs border border-slate-200 rounded-xl focus:outline-none focus:border-[#176e57] bg-slate-50 text-slate-800 resize-none"
-                />
+          <div className="space-y-3">
+            <div 
+              className="anim-cascade-item bg-white rounded-3xl p-5 border border-slate-100 shadow-[0_2px_12px_rgba(0,0,0,0.02)] space-y-3.5"
+              style={{ animationDelay: '40ms' }}
+            >
+              <div className="flex items-center gap-2.5 border-b border-slate-100 pb-3">
+                <div className="p-2 bg-amber-50 text-amber-800 rounded-xl">
+                  <Megaphone className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wide">
+                    Campus Broadcast Banner
+                  </h3>
+                  <p className="text-[10px] text-slate-400">
+                    Pushes a priority supervisor notice to all active devices
+                  </p>
+                </div>
               </div>
 
-              <div className="flex gap-2">
-                <button
-                  type="submit"
-                  disabled={isUpdatingNotice || !noticeText.trim()}
-                  className="flex-1 py-2.5 bg-[#176e57] hover:bg-[#135c49] active:scale-95 text-white font-bold text-xs rounded-xl shadow-xs transition disabled:opacity-50 flex items-center justify-center gap-1.5"
-                >
-                  <Check className="w-3.5 h-3.5" />
-                  <span>{isUpdatingNotice ? 'Publishing...' : 'Broadcast to All Staff'}</span>
-                </button>
+              <form onSubmit={handleSaveBroadcast} className="space-y-3">
+                <div>
+                  <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                    Announcement Message:
+                  </label>
+                  <textarea
+                    rows={3}
+                    required
+                    value={noticeText}
+                    onChange={(e) => setNoticeText(e.target.value)}
+                    placeholder="Executive inspection in Silang & Dimasalang at 1:30 PM. Ensure halls are clear."
+                    className="w-full p-3 text-xs border border-slate-100 rounded-2xl focus:outline-none focus:border-[#176e57] bg-slate-50 text-slate-800 resize-none shadow-2xs"
+                  />
+                </div>
 
-                {broadcast?.active && (
+                <div className="flex gap-2">
                   <button
-                    type="button"
-                    onClick={handleClearBroadcast}
-                    className="py-2.5 px-3 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs rounded-xl border border-rose-200 active:scale-95 transition"
+                    type="submit"
+                    disabled={isUpdatingNotice || !noticeText.trim()}
+                    className="flex-1 py-2.5 bg-[#176e57] hover:bg-[#135c49] active:scale-95 text-white font-bold text-xs rounded-2xl shadow-xs transition disabled:opacity-50 flex items-center justify-center gap-1.5"
                   >
-                    Turn Off
+                    <Check className="w-3.5 h-3.5" />
+                    <span>{isUpdatingNotice ? 'Publishing...' : 'Broadcast to All Staff'}</span>
                   </button>
-                )}
-              </div>
-            </form>
 
-            {broadcast?.active && (
-              <div className="mt-3 p-3 bg-amber-50/80 border border-amber-200 rounded-2xl text-xs space-y-1">
-                <span className="font-bold text-amber-950 uppercase tracking-wide text-[10px] block">
-                  Currently Live on Screen:
-                </span>
-                <p className="text-amber-900 font-medium">"{broadcast.message}"</p>
-                <span className="text-[10px] text-amber-700 font-mono block">
-                  Posted: {broadcast.updatedAt || 'Recently'}
-                </span>
-              </div>
-            )}
+                  {broadcast?.active && (
+                    <button
+                      type="button"
+                      onClick={handleClearBroadcast}
+                      className="py-2.5 px-3.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs rounded-2xl border border-rose-200 active:scale-95 transition"
+                    >
+                      Turn Off
+                    </button>
+                  )}
+                </div>
+              </form>
+
+              {broadcast?.active && (
+                <div 
+                  className="anim-pop-item mt-3 p-3.5 bg-amber-50/80 border border-amber-200/80 rounded-2xl text-xs space-y-1"
+                  style={{ animationDelay: '100ms' }}
+                >
+                  <span className="font-bold text-amber-950 uppercase tracking-wider text-[10px] block">
+                    Currently Live on Screen:
+                  </span>
+                  <p className="text-amber-900 font-medium">"{broadcast.message}"</p>
+                  <span className="text-[10px] text-amber-700 font-mono block">
+                    Posted: {broadcast.updatedAt || 'Recently'}
+                  </span>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
         {/* TAB 3: STOCK */}
         {activeTab === 'stock' && (
-          <div className="space-y-3.5">
-            <div className="bg-white rounded-3xl p-4 border border-slate-100 shadow-[0_2px_8px_rgba(0,0,0,0.02)] space-y-3">
-              <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
+          <div className="space-y-3">
+            <div 
+              className="anim-cascade-item bg-white rounded-3xl p-5 border border-slate-100 shadow-[0_2px_12px_rgba(0,0,0,0.02)] space-y-3"
+              style={{ animationDelay: '30ms' }}
+            >
+              <div className="flex items-center gap-2.5 border-b border-slate-100 pb-3">
                 <div className="p-2 bg-emerald-50 text-[#176e57] rounded-xl">
                   <Package className="w-4 h-4" />
                 </div>
@@ -921,7 +1077,7 @@ export default function Admin({
                     value={newItemName}
                     onChange={(e) => setNewItemName(e.target.value)}
                     placeholder="Mop Heads, Disinfectant, Bond Paper"
-                    className="w-full p-2 border border-slate-200 rounded-xl bg-slate-50 focus:outline-none focus:border-[#176e57]"
+                    className="w-full p-2.5 border border-slate-100 rounded-2xl bg-slate-50 focus:outline-none focus:border-[#176e57]"
                   />
                 </div>
 
@@ -933,7 +1089,7 @@ export default function Admin({
                     <select
                       value={newItemCategory}
                       onChange={(e) => setNewItemCategory(e.target.value)}
-                      className="w-full p-2 border border-slate-200 rounded-xl bg-slate-50 font-semibold focus:outline-none focus:border-[#176e57]"
+                      className="w-full p-2.5 border border-slate-100 rounded-2xl bg-slate-50 font-semibold focus:outline-none focus:border-[#176e57]"
                     >
                       <option value="Paper & Printing">Paper & Printing</option>
                       <option value="Chemicals">Chemicals</option>
@@ -954,7 +1110,7 @@ export default function Admin({
                       value={newItemUnit}
                       onChange={(e) => setNewItemUnit(e.target.value)}
                       placeholder="pcs, gals, rolls, packs"
-                      className="w-full p-2 border border-slate-200 rounded-xl bg-slate-50 focus:outline-none focus:border-[#176e57]"
+                      className="w-full p-2.5 border border-slate-100 rounded-2xl bg-slate-50 focus:outline-none focus:border-[#176e57]"
                     />
                   </div>
                 </div>
@@ -971,7 +1127,7 @@ export default function Admin({
                       value={newItemQty}
                       onChange={(e) => setNewItemQty(e.target.value)}
                       placeholder="10"
-                      className="w-full p-2 border border-slate-200 rounded-xl bg-slate-50 focus:outline-none focus:border-[#176e57]"
+                      className="w-full p-2.5 border border-slate-100 rounded-2xl bg-slate-50 focus:outline-none focus:border-[#176e57]"
                     />
                   </div>
 
@@ -986,7 +1142,7 @@ export default function Admin({
                       value={newItemThreshold}
                       onChange={(e) => setNewItemThreshold(e.target.value)}
                       placeholder="3"
-                      className="w-full p-2 border border-slate-200 rounded-xl bg-slate-50 focus:outline-none focus:border-[#176e57]"
+                      className="w-full p-2.5 border border-slate-100 rounded-2xl bg-slate-50 focus:outline-none focus:border-[#176e57]"
                     />
                   </div>
                 </div>
@@ -994,7 +1150,7 @@ export default function Admin({
                 <button
                   type="submit"
                   disabled={isAddingSupply || !newItemName.trim()}
-                  className="w-full py-2.5 bg-[#176e57] hover:bg-[#135c49] active:scale-95 text-white font-bold rounded-xl transition shadow-xs flex items-center justify-center gap-1.5"
+                  className="w-full py-2.5 bg-[#176e57] hover:bg-[#135c49] active:scale-95 text-white font-bold rounded-2xl transition shadow-xs flex items-center justify-center gap-1.5"
                 >
                   <Plus className="w-4 h-4" />
                   <span>{isAddingSupply ? 'Saving...' : 'Add Item to Storage'}</span>
@@ -1002,40 +1158,45 @@ export default function Admin({
               </form>
             </div>
 
-            <div className="bg-white rounded-3xl p-4 border border-slate-100 shadow-[0_2px_8px_rgba(0,0,0,0.02)] space-y-2.5">
-              <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wide border-b border-slate-100 pb-2">
+            {/* Inventory List with Staggered Rows */}
+            <div 
+              className="anim-cascade-item bg-white rounded-3xl p-5 border border-slate-100 shadow-[0_2px_12px_rgba(0,0,0,0.02)] space-y-2.5"
+              style={{ animationDelay: '80ms' }}
+            >
+              <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wide border-b border-slate-100 pb-2.5">
                 Existing Inventory ({supplies.length} Items)
               </h3>
 
               <div className="space-y-2">
-                {supplies.map((item) => {
+                {supplies.map((item, sIdx) => {
                   const isLow = item.quantity <= item.threshold;
 
                   return (
                     <div
                       key={item.id}
-                      className="p-2.5 rounded-2xl bg-slate-50 border border-slate-200/80 flex items-center justify-between text-xs"
+                      className="anim-cascade-item p-3 rounded-2xl bg-slate-50/60 border border-slate-100 flex items-center justify-between text-xs transition"
+                      style={{ animationDelay: `${110 + sIdx * 35}ms` }}
                     >
                       <div>
                         <div className="flex items-center gap-1.5">
                           <span className="font-bold text-slate-800">{item.name}</span>
                           {isLow && (
-                            <span className="text-[9px] font-bold bg-rose-100 text-rose-800 px-1.5 py-0.5 rounded-md">
+                            <span className="text-[9px] font-bold bg-rose-100 text-rose-800 px-2 py-0.5 rounded-full animate-pulse">
                               Low
                             </span>
                           )}
                         </div>
-                        <span className="text-[10px] text-slate-400 block font-medium">
+                        <span className="text-[10px] text-slate-400 block font-medium mt-0.5">
                           {item.category || 'General'} &bull; Min: {item.threshold} {item.unit}
                         </span>
                       </div>
 
                       <div className="flex items-center gap-2">
-                        <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-xl p-0.5 shadow-2xs">
+                        <div className="flex items-center gap-1 bg-white border border-slate-100 rounded-xl p-0.5 shadow-2xs">
                           <button
                             type="button"
                             onClick={() => handleUpdateQuantity(item.id, -1)}
-                            className="w-6 h-6 rounded-lg bg-slate-100 hover:bg-slate-200 font-bold active:scale-90 text-slate-700 flex items-center justify-center"
+                            className="w-6 h-6 rounded-lg bg-slate-100 hover:bg-slate-200 font-bold active:scale-90 text-slate-700 flex items-center justify-center transition"
                           >
                             -
                           </button>
@@ -1045,7 +1206,7 @@ export default function Admin({
                           <button
                             type="button"
                             onClick={() => handleUpdateQuantity(item.id, 1)}
-                            className="w-6 h-6 rounded-lg bg-[#176e57] hover:bg-[#135c49] font-bold active:scale-90 text-white flex items-center justify-center"
+                            className="w-6 h-6 rounded-lg bg-[#176e57] hover:bg-[#135c49] font-bold active:scale-90 text-white flex items-center justify-center transition"
                           >
                             +
                           </button>
@@ -1069,72 +1230,226 @@ export default function Admin({
 
         {/* TAB 4: SHIFT */}
         {activeTab === 'shift' && (
-          <div className="bg-white rounded-3xl p-4 border border-slate-100 shadow-[0_2px_8px_rgba(0,0,0,0.02)] space-y-4">
-            <div className="border-b border-slate-100 pb-2">
-              <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wide">
-                Shift Operations & Data Export
-              </h3>
-              <p className="text-[10px] text-slate-400">
-                Inspection reset and formal facilities reports
-              </p>
-            </div>
+          <div className="space-y-3">
+            <div 
+              className="anim-cascade-item bg-white rounded-3xl p-5 border border-slate-100 shadow-[0_2px_12px_rgba(0,0,0,0.02)] space-y-3.5"
+              style={{ animationDelay: '30ms' }}
+            >
+              <div className="border-b border-slate-100 pb-3">
+                <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wide">
+                  Shift Operations & Data Export
+                </h3>
+                <p className="text-[10px] text-slate-400">
+                  Inspection reset and formal facilities reports
+                </p>
+              </div>
 
-            <div className="space-y-2.5">
-              <button
-                type="button"
-                onClick={handleExportExcel}
-                className="w-full p-3 bg-emerald-50 hover:bg-emerald-100 active:scale-95 text-[#176e57] border border-emerald-200/80 rounded-2xl font-bold text-xs flex items-center justify-between transition shadow-xs"
-              >
-                <div className="flex items-center gap-2">
-                  <Download className="w-4 h-4 text-emerald-700" />
-                  <div className="text-left">
-                    <span className="block font-bold">Export Excel Report (.xlsx)</span>
-                    <span className="text-[10px] text-emerald-800 block font-normal">
-                      Classroom logs, verification status, and stock counts
-                    </span>
+              <div className="space-y-2.5">
+                <button
+                  type="button"
+                  onClick={handleExportExcel}
+                  className="anim-cascade-item w-full p-3.5 bg-emerald-50/80 hover:bg-emerald-100 active:scale-95 text-[#176e57] border border-emerald-200/60 rounded-2xl font-bold text-xs flex items-center justify-between transition shadow-xs"
+                  style={{ animationDelay: '60ms' }}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <Download className="w-4 h-4 text-emerald-700" />
+                    <div className="text-left">
+                      <span className="block font-bold">Export Excel Report (.xlsx)</span>
+                      <span className="text-[10px] text-emerald-800 block font-normal">
+                        Classrooms with building names, verification status, and stock
+                      </span>
+                    </div>
                   </div>
-                </div>
-                <span className="text-xs">&rarr;</span>
-              </button>
+                  <span className="text-xs">&rarr;</span>
+                </button>
 
-              <button
-                type="button"
-                onClick={handleResetDay}
-                className="w-full p-3 bg-amber-50 hover:bg-amber-100 active:scale-95 text-amber-900 border border-amber-200/80 rounded-2xl font-bold text-xs flex items-center justify-between transition shadow-xs"
-              >
-                <div className="flex items-center gap-2">
-                  <RotateCcw className="w-4 h-4 text-amber-700" />
-                  <div className="text-left">
-                    <span className="block font-bold">Reset Campus for New Day</span>
-                    <span className="text-[10px] text-amber-800 block font-normal">
-                      Sets all 35 rooms back to Pending inspection
-                    </span>
+                <button
+                  type="button"
+                  onClick={handleResetDay}
+                  className="anim-cascade-item w-full p-3.5 bg-amber-50/80 hover:bg-amber-100 active:scale-95 text-amber-900 border border-amber-200/60 rounded-2xl font-bold text-xs flex items-center justify-between transition shadow-xs"
+                  style={{ animationDelay: '110ms' }}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <RotateCcw className="w-4 h-4 text-amber-700" />
+                    <div className="text-left">
+                      <span className="block font-bold">Reset Campus for New Day</span>
+                      <span className="text-[10px] text-amber-800 block font-normal">
+                        Sets all classrooms back to Pending inspection
+                      </span>
+                    </div>
                   </div>
-                </div>
-                <span className="text-xs">&rarr;</span>
-              </button>
+                  <span className="text-xs">&rarr;</span>
+                </button>
 
-              <button
-                type="button"
-                onClick={handleClearLogs}
-                className="w-full p-3 bg-rose-50 hover:bg-rose-100 active:scale-95 text-rose-700 border border-rose-200 rounded-2xl font-bold text-xs flex items-center justify-between transition shadow-xs"
-              >
-                <div className="flex items-center gap-2">
-                  <Trash2 className="w-4 h-4 text-rose-600" />
-                  <div className="text-left">
-                    <span className="block font-bold">Clear Shift Notes & Logs</span>
-                    <span className="text-[10px] text-rose-800 block font-normal">
-                      Wipes handover reports and incident records
-                    </span>
+                <button
+                  type="button"
+                  onClick={handleClearLogs}
+                  className="anim-cascade-item w-full p-3.5 bg-rose-50/80 hover:bg-rose-100 active:scale-95 text-rose-700 border border-rose-200/60 rounded-2xl font-bold text-xs flex items-center justify-between transition shadow-xs"
+                  style={{ animationDelay: '160ms' }}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <Trash2 className="w-4 h-4 text-rose-600" />
+                    <div className="text-left">
+                      <span className="block font-bold">Clear Shift Notes & Logs</span>
+                      <span className="text-[10px] text-rose-800 block font-normal">
+                        Wipes handover reports and incident records
+                      </span>
+                    </div>
                   </div>
-                </div>
-                <span className="text-xs">&rarr;</span>
-              </button>
+                  <span className="text-xs">&rarr;</span>
+                </button>
+              </div>
             </div>
           </div>
         )}
 
       </div>
+
+      {/* SEARCHABLE MULTI-STAFF ASSIGNMENT MODAL */}
+      {activeAssignSlot && typeof document !== 'undefined' && createPortal(
+        <div 
+          className="fixed inset-0 z-[110] bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-backdrop select-none"
+          onClick={() => {
+            setActiveAssignSlot(null);
+            setStaffPickerSearch('');
+          }}
+        >
+          <div 
+            className="bg-white w-full max-w-sm rounded-3xl p-5 shadow-2xl border border-slate-100 flex flex-col max-h-[85vh] anim-cascade-item overflow-hidden space-y-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 pb-2.5 flex-shrink-0">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 bg-emerald-50 text-[#176e57] rounded-xl">
+                  <UserCheck className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800">
+                    Assign Floor Personnel
+                  </h3>
+                  <p className="text-[10px] text-slate-400">
+                    {activeAssignSlot.building} &bull; Floor {activeAssignSlot.floor} ({stagedStaffIds.length} Selected)
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveAssignSlot(null);
+                  setStaffPickerSearch('');
+                }}
+                className="p-1 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="relative flex-shrink-0">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="text"
+                autoFocus
+                value={staffPickerSearch}
+                onChange={(e) => setStaffPickerSearch(e.target.value)}
+                placeholder="Search staff name or ID..."
+                className="w-full pl-8 pr-3 py-2 bg-slate-50 border border-slate-100 rounded-2xl text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#176e57]"
+              />
+              {staffPickerSearch && (
+                <button
+                  type="button"
+                  onClick={() => setStaffPickerSearch('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+
+            <div className="space-y-1.5 overflow-y-auto pr-1 flex-1 text-xs">
+              <button
+                type="button"
+                onClick={() => handleToggleStagedStaff('')}
+                className="w-full p-2.5 rounded-2xl border border-dashed border-rose-200 bg-rose-50/50 hover:bg-rose-50 text-rose-700 font-bold flex items-center justify-between transition active:scale-98"
+              >
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-xl bg-rose-100 flex items-center justify-center text-rose-600">
+                    <X className="w-4 h-4" />
+                  </div>
+                  <span>Clear All Assignments (Unassigned)</span>
+                </div>
+                <span className="text-[10px] text-rose-400">&times;</span>
+              </button>
+
+              {filteredPickerStaff.map((staff, pIdx) => {
+                const isSelected = stagedStaffIds.includes(String(staff.id));
+                const avatar = staffAvatars[staff.id];
+                const isOnline = onlineUsers.some((u) => String(u.id) === String(staff.id));
+                const name = getStaffName(staff);
+
+                return (
+                  <button
+                    key={staff.id}
+                    type="button"
+                    onClick={() => handleToggleStagedStaff(String(staff.id))}
+                    className={`anim-cascade-item w-full p-2.5 rounded-2xl border text-left flex items-center justify-between transition active:scale-98 ${
+                      isSelected
+                        ? 'bg-emerald-50 border-emerald-300 shadow-2xs'
+                        : 'bg-white hover:bg-slate-50 border-slate-100'
+                    }`}
+                    style={{ animationDelay: `${pIdx * 25}ms` }}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div className="relative flex-shrink-0">
+                        <div className="w-8 h-8 rounded-xl bg-emerald-100 text-[#176e57] flex items-center justify-center font-bold text-xs overflow-hidden border border-emerald-300/40">
+                          {avatar ? (
+                            <img
+                              src={avatar}
+                              alt={name}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <span>{name[0]}</span>
+                          )}
+                        </div>
+                        <span className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border-2 border-white ${
+                          isOnline ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'
+                        }`} />
+                      </div>
+
+                      <div>
+                        <span className="font-bold text-slate-800 block text-xs">
+                          {name}
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          ID: {staff.id}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className={`w-5 h-5 rounded-lg border flex items-center justify-center transition ${
+                      isSelected ? 'bg-[#176e57] border-[#176e57] text-white' : 'border-slate-300 bg-white'
+                    }`}>
+                      {isSelected && <Check className="w-3.5 h-3.5 stroke-[2.5]" />}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="pt-2 border-t border-slate-100 flex items-center justify-end">
+              <button
+                type="button"
+                onClick={handleApplyAssignments}
+                className="w-full py-2.5 bg-[#176e57] hover:bg-[#135c49] active:scale-95 text-white font-bold rounded-2xl text-xs transition shadow-xs flex items-center justify-center gap-1.5"
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>Done</span>
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
 
       {/* CREATE ACCOUNT MODAL */}
       {showCreateModal && typeof document !== 'undefined' && createPortal(
@@ -1143,12 +1458,12 @@ export default function Admin({
           onClick={() => setShowCreateModal(false)}
         >
           <div 
-            className="bg-white w-full max-w-sm rounded-3xl p-5 shadow-2xl border border-slate-100 space-y-3.5 animate-sheet-up overflow-hidden"
+            className="bg-white w-full max-w-sm rounded-3xl p-5 shadow-2xl border border-slate-100 space-y-3.5 anim-cascade-item overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
               <div className="flex items-center gap-2">
-                <div className="p-1.5 bg-emerald-50 text-[#176e57] rounded-lg">
+                <div className="p-1.5 bg-emerald-50 text-[#176e57] rounded-xl">
                   <Shield className="w-4 h-4" />
                 </div>
                 <div>
@@ -1223,7 +1538,6 @@ export default function Admin({
                       const role = e.target.value;
                       setNewUserRole(role);
                       setNewUserAccessLevel(role === 'admin' ? 2 : 1);
-                      if (role !== 'admin') setAdminSecretPasscode('');
                     }}
                     className="w-full px-2.5 py-2 border border-slate-200 rounded-xl bg-slate-50 font-semibold focus:outline-none focus:border-[#176e57]"
                   >
@@ -1247,32 +1561,10 @@ export default function Admin({
                 </div>
               </div>
 
-              {newUserRole === 'admin' && (
-                <div className="p-2.5 bg-rose-50/80 border border-rose-200 rounded-2xl space-y-1.5 animate-pop">
-                  <div className="flex items-center gap-1.5 text-rose-800">
-                    <Lock className="w-3.5 h-3.5 flex-shrink-0" />
-                    <label className="text-[10px] font-bold uppercase tracking-wider">
-                      Supervisor Security Key:
-                    </label>
-                  </div>
-                  <input
-                    type="password"
-                    required
-                    value={adminSecretPasscode}
-                    onChange={(e) => setAdminSecretPasscode(e.target.value)}
-                    placeholder="Enter secret passcode to grant admin"
-                    className="w-full px-2.5 py-1.5 border border-rose-300 rounded-xl bg-white text-slate-800 focus:outline-none focus:border-rose-600 font-mono text-xs"
-                  />
-                  <p className="text-[9px] text-rose-600">
-                    Granting supervisor admin access requires authorization.
-                  </p>
-                </div>
-              )}
-
               <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl space-y-0.5">
                 <span className="text-[10px] font-bold text-slate-600 block">Default Credentials:</span>
                 <p className="text-[10px] text-slate-500">
-                  Temporary password: <code className="font-mono font-bold text-emerald-800">sjc1234</code>
+                  Standard institutional default password will be assigned automatically.
                 </p>
                 <p className="text-[9px] text-slate-400">
                   User will be forced to change this password on their first login.
@@ -1301,14 +1593,14 @@ export default function Admin({
         document.body
       )}
 
-      {/* DELETE ACCOUNT MODAL */}
+      {/* DELETE ACCOUNT MODAL (Allows deleting Staff and secondary Admins like Stitch / 006) */}
       {showDeleteModal && typeof document !== 'undefined' && createPortal(
         <div 
           className="fixed inset-0 z-[100] bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-backdrop select-none"
           onClick={() => setShowDeleteModal(false)}
         >
           <div 
-            className="bg-white w-full max-w-sm rounded-3xl p-5 shadow-2xl border border-slate-100 space-y-3.5 animate-sheet-up overflow-hidden"
+            className="bg-white w-full max-w-sm rounded-3xl p-5 shadow-2xl border border-slate-100 space-y-3.5 anim-cascade-item overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
@@ -1321,7 +1613,7 @@ export default function Admin({
                     Delete Account
                   </h3>
                   <p className="text-[10px] text-slate-400">
-                    Permanently delete staff credentials
+                    Permanently delete staff or admin credentials
                   </p>
                 </div>
               </div>
@@ -1336,12 +1628,12 @@ export default function Admin({
 
             <div className="space-y-3 text-xs">
               <p className="text-slate-600 leading-relaxed">
-                Select the staff account you wish to permanently remove from the system.
+                Select the staff or secondary admin account you wish to permanently remove from the system.
               </p>
 
               <div>
                 <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
-                  Select Staff Account:
+                  Select Account:
                 </label>
                 <select
                   value={selectedUserToDelete}
@@ -1350,10 +1642,11 @@ export default function Admin({
                 >
                   <option value="">Select Account</option>
                   {staffRoster
-                    .filter((s) => s.id !== 'admin')
+                    // Protects only the root master 'admin' account
+                    .filter((s) => String(s.id).toLowerCase() !== 'admin')
                     .map((staff) => (
                       <option key={staff.id} value={staff.id}>
-                        {getStaffName(staff)} (ID: {staff.id})
+                        {getStaffName(staff)} (ID: {staff.id}){staff.role === 'admin' ? ' — [Admin]' : ''}
                       </option>
                     ))}
                 </select>
@@ -1364,7 +1657,7 @@ export default function Admin({
                   Warning
                 </span>
                 <p className="text-[10px] leading-relaxed text-rose-700">
-                  Deleting this user will unassign them from any assigned floors and reset those classrooms back to Unassigned.
+                  Deleting this user will unassign them from any assigned floors across all buildings and reset those classrooms back to Unassigned.
                 </p>
               </div>
 

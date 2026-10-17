@@ -2,8 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../data/supabaseClient';
+import { hashPassword } from '../utils/security';
 import { 
-  User, 
   KeyRound, 
   CheckCircle2, 
   AlertCircle, 
@@ -12,15 +12,24 @@ import {
   LogOut, 
   Building2, 
   Check, 
-  ArrowLeft,
-  Sparkles,
-  Zap,
-  ChevronDown,
-  Camera,
-  Trash2
+  ArrowLeft, 
+  Sparkles, 
+  Zap, 
+  ChevronDown, 
+  Camera, 
+  Trash2,
+  Monitor,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 
-export default function Profile({ user, onLogout, assignments = {} }) {
+export default function Profile({ 
+  user, 
+  onLogout, 
+  assignments = {}, 
+  isDesktopView = false, 
+  onToggleDesktopView 
+}) {
   const navigate = useNavigate();
   const fileInputRef = useRef(null);
 
@@ -48,16 +57,21 @@ export default function Profile({ user, onLogout, assignments = {} }) {
     return localStorage.getItem('sjc_animations_disabled') !== 'true';
   });
 
+  // Password Input States
   const [currentPassInput, setCurrentPassInput] = useState('');
   const [newPassInput, setNewPassInput] = useState('');
   const [confirmPassInput, setConfirmPassInput] = useState('');
-  const [isUpdating, setIsUpdating] = useState(false);
 
+  // Password Peeking States
+  const [showCurrentPass, setShowCurrentPass] = useState(false);
+  const [showNewPass, setShowNewPass] = useState(false);
+  const [showConfirmPass, setShowConfirmPass] = useState(false);
+
+  const [isUpdating, setIsUpdating] = useState(false);
   const [successMsg, setSuccessMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
-  // Sync avatar from Supabase on mount
   useEffect(() => {
     if (!user?.id) return;
     const loadCloudAvatar = async () => {
@@ -79,7 +93,6 @@ export default function Profile({ user, onLogout, assignments = {} }) {
     loadCloudAvatar();
   }, [user?.id]);
 
-  // Compress photo down to ~25KB thumbnail so it syncs fast and fits quotas
   const compressImage = (file) => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -129,7 +142,6 @@ export default function Profile({ user, onLogout, assignments = {} }) {
       const storageKey = `sjc_avatar_${user?.id || 'default'}`;
       localStorage.setItem(storageKey, compressedBase64);
 
-      // Save to Supabase so it syncs across all devices & shows in Admin
       if (user?.id) {
         await supabase
           .from('profiles')
@@ -140,11 +152,10 @@ export default function Profile({ user, onLogout, assignments = {} }) {
           });
       }
 
-      setSuccessMsg('Profile picture updated and synced everywhere!');
+      setSuccessMsg('Profile picture updated!');
       setTimeout(() => setSuccessMsg(''), 3500);
-    } catch (err) {
-      console.error('Image compression error:', err);
-      setErrorMsg('Failed to process image. Please try another file.');
+    } catch {
+      setErrorMsg('Failed to process image. Try another file.');
       setTimeout(() => setErrorMsg(''), 3500);
     }
   };
@@ -163,7 +174,7 @@ export default function Profile({ user, onLogout, assignments = {} }) {
       }
     }
 
-    setSuccessMsg('Profile picture reset to default avatar.');
+    setSuccessMsg('Profile picture reset.');
     setTimeout(() => setSuccessMsg(''), 3500);
   };
 
@@ -175,59 +186,130 @@ export default function Profile({ user, onLogout, assignments = {} }) {
       localStorage.removeItem('sjc_animations_disabled');
       localStorage.removeItem('sjc_quick_login');
       document.body.classList.remove('disable-animations');
-      setSuccessMsg('Presentation Mode active: Entrance animations enabled.');
+      setSuccessMsg('Presentation Mode: Entrance animations enabled.');
     } else {
       localStorage.setItem('sjc_animations_disabled', 'true');
       localStorage.setItem('sjc_quick_login', 'true');
       document.body.classList.add('disable-animations');
-      setSuccessMsg('Fast Shift Mode active: Instant viewports enabled.');
+      setSuccessMsg('Fast Shift Mode: Instant views enabled.');
     }
     setTimeout(() => setSuccessMsg(''), 3500);
   };
 
-  const staffFloor = Object.entries(assignments).find(([_, staffId]) => staffId === user?.id)?.[0] || 'Unassigned';
+  const staffFloor = Object.entries(assignments).find(([_, staffId]) => {
+    if (Array.isArray(staffId)) return staffId.includes(user?.id);
+    return staffId === user?.id;
+  })?.[0] || 'Unassigned';
 
-  const getStoredPassword = () => {
-    const custom = localStorage.getItem(`sjc_pass_${user?.id}`);
-    if (custom) return custom;
-    return user?.id === 'admin' ? 'admin123' : 'password123';
-  };
-
-  const handlePasswordChange = (e) => {
+  // SECURE PASSWORD CHANGE HANDLER
+  const handlePasswordChange = async (e) => {
     e.preventDefault();
     setErrorMsg('');
     setSuccessMsg('');
 
-    const actualCurrentPass = getStoredPassword();
+    const cleanCurrent = currentPassInput.trim();
+    const cleanNew = newPassInput.trim();
+    const cleanConfirm = confirmPassInput.trim();
 
-    if (currentPassInput !== actualCurrentPass) {
-      setErrorMsg('Current password does not match.');
+    if (cleanNew.length < 6) {
+      setErrorMsg('New password must be at least 6 characters long.');
       setTimeout(() => setErrorMsg(''), 3500);
       return;
     }
 
-    if (newPassInput.length < 6) {
-      setErrorMsg('New password must be at least 6 characters.');
-      setTimeout(() => setErrorMsg(''), 3500);
-      return;
-    }
-
-    if (newPassInput !== confirmPassInput) {
-      setErrorMsg('New passwords do not match.');
+    if (cleanNew !== cleanConfirm) {
+      setErrorMsg('New password and confirmation do not match.');
       setTimeout(() => setErrorMsg(''), 3500);
       return;
     }
 
     setIsUpdating(true);
-    setTimeout(() => {
-      localStorage.setItem(`sjc_pass_${user?.id}`, newPassInput);
+
+    try {
+      const cleanId = String(user?.id || '').trim();
+      const cleanLower = cleanId.toLowerCase();
+      const enteredCurrentHash = await hashPassword(cleanCurrent);
+
+      // 1. Fetch current profile from database
+      const { data: dbUser, error: dbErr } = await supabase
+        .from('profiles')
+        .select('id, email, password, auth_user_id')
+        .ilike('id', cleanId)
+        .maybeSingle();
+
+      if (dbErr || !dbUser) {
+        setErrorMsg('User profile record not found.');
+        setIsUpdating(false);
+        setTimeout(() => setErrorMsg(''), 3500);
+        return;
+      }
+
+      let isCurrentValid = false;
+
+      // 2. Validate current password against Supabase Auth (if linked) or database
+      if (dbUser.auth_user_id && dbUser.email) {
+        try {
+          const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
+            email: dbUser.email,
+            password: cleanCurrent
+          });
+          if (!authErr && authData?.user) {
+            isCurrentValid = true;
+          }
+        } catch (_) {}
+      }
+
+      if (!isCurrentValid) {
+        const storedCustomHash = localStorage.getItem(`sjc_pass_hash_${cleanLower}`);
+        isCurrentValid = (storedCustomHash && storedCustomHash === enteredCurrentHash) || 
+                         (dbUser.password && dbUser.password === cleanCurrent);
+      }
+
+      if (!isCurrentValid) {
+        setErrorMsg('Current password does not match.');
+        setIsUpdating(false);
+        setTimeout(() => setErrorMsg(''), 3500);
+        return;
+      }
+
+      // 3. Update Supabase Auth if linked
+      if (dbUser.auth_user_id) {
+        try {
+          await supabase.auth.updateUser({ password: cleanNew });
+        } catch (authUpdateErr) {
+          console.warn('Auth password update notice:', authUpdateErr);
+        }
+      }
+
+      // 4. Update the 'password' column in public.profiles (NO non-existent password_hash column)
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update({ 
+          password: cleanNew,
+          is_first_login: false,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', dbUser.id);
+
+      if (updateError) throw updateError;
+
+      // 5. Update local hash cache
+      const newHash = await hashPassword(cleanNew);
+      localStorage.setItem(`sjc_pass_hash_${cleanLower}`, newHash);
+      localStorage.removeItem(`sjc_pass_${cleanLower}`);
+
       setIsUpdating(false);
       setSuccessMsg('Password successfully updated!');
       setCurrentPassInput('');
       setNewPassInput('');
       setConfirmPassInput('');
       setTimeout(() => setSuccessMsg(''), 3500);
-    }, 400);
+    } catch (err) {
+      console.error('Password change error:', err);
+      setIsUpdating(false);
+      setErrorMsg(err.message || 'Failed to update password. Please try again.');
+      setTimeout(() => setErrorMsg(''), 3500);
+    }
   };
 
   const handleClearDeviceTrust = () => {
@@ -237,37 +319,12 @@ export default function Profile({ user, onLogout, assignments = {} }) {
   };
 
   return (
-    <div className="p-4 space-y-3.5 pb-28 text-slate-800">
+    <div className="p-4 space-y-3.5 pb-28 text-slate-800 max-w-md mx-auto">
       
-      {/* Toast Keyframe Styles */}
-      <style>{`
-        @keyframes toastFadeInOut {
-          0% {
-            opacity: 0;
-            transform: translateY(-12px) scale(0.96);
-          }
-          10% {
-            opacity: 1;
-            transform: translateY(0) scale(1);
-          }
-          85% {
-            opacity: 1;
-            transform: translateY(0) scale(1);
-          }
-          100% {
-            opacity: 0;
-            transform: translateY(-8px) scale(0.97);
-          }
-        }
-        .animate-toast-smooth {
-          animation: toastFadeInOut 3.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-        }
-      `}</style>
-
-      {/* Floating Success Notification */}
+      {/* Toast Notifications */}
       {successMsg && typeof document !== 'undefined' && createPortal(
-        <div className="fixed top-20 inset-x-0 z-[150] max-w-sm mx-auto px-4 pointer-events-none animate-toast-smooth select-none">
-          <div className="pointer-events-auto p-3 bg-emerald-50/95 backdrop-blur-sm border border-emerald-300 text-emerald-800 text-xs font-semibold rounded-2xl flex items-center gap-2.5 shadow-xl">
+        <div className="fixed top-20 inset-x-0 z-[150] max-w-sm mx-auto px-4 pointer-events-none animate-toast select-none">
+          <div className="pointer-events-auto p-3.5 bg-emerald-50/95 backdrop-blur-sm border border-emerald-300 text-emerald-800 text-xs font-semibold rounded-3xl flex items-center gap-2.5 shadow-xl">
             <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
             <span className="flex-1 font-medium">{successMsg}</span>
           </div>
@@ -275,10 +332,9 @@ export default function Profile({ user, onLogout, assignments = {} }) {
         document.body
       )}
 
-      {/* Floating Error Notification */}
       {errorMsg && typeof document !== 'undefined' && createPortal(
-        <div className="fixed top-20 inset-x-0 z-[150] max-w-sm mx-auto px-4 pointer-events-none animate-toast-smooth select-none">
-          <div className="pointer-events-auto p-3 bg-rose-50/95 backdrop-blur-sm border border-rose-300 text-rose-800 text-xs font-semibold rounded-2xl flex items-center gap-2.5 shadow-xl animate-shake">
+        <div className="fixed top-20 inset-x-0 z-[150] max-w-sm mx-auto px-4 pointer-events-none animate-toast select-none">
+          <div className="pointer-events-auto p-3.5 bg-rose-50/95 backdrop-blur-sm border border-rose-300 text-rose-800 text-xs font-semibold rounded-3xl flex items-center gap-2.5 shadow-xl animate-shake">
             <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
             <span className="flex-1 font-medium">{errorMsg}</span>
           </div>
@@ -286,7 +342,6 @@ export default function Profile({ user, onLogout, assignments = {} }) {
         document.body
       )}
 
-      {/* Hidden File Picker */}
       <input
         type="file"
         ref={fileInputRef}
@@ -304,7 +359,7 @@ export default function Profile({ user, onLogout, assignments = {} }) {
         <span>Back to Dashboard</span>
       </button>
 
-      {/* User Card */}
+      {/* User Info Card */}
       <div className="bg-white rounded-3xl p-5 border border-slate-100 shadow-[0_2px_10px_rgba(0,0,0,0.03)]">
         <div className="flex items-center gap-4">
           <div className="relative group flex-shrink-0">
@@ -370,14 +425,53 @@ export default function Profile({ user, onLogout, assignments = {} }) {
               onClick={handleRemoveAvatar}
               className="text-[11px] text-rose-500 hover:text-rose-600 flex items-center gap-1 font-medium transition active:scale-95"
             >
-              <Trash2 className="w-3 h-3" />
+              <Trash2 className="w-3.5 h-3.5" />
               <span>Remove photo</span>
             </button>
           </div>
         )}
       </div>
 
-      {/* 1. EXPERIENCE & PRESENTATION MODE */}
+      {/* Admin PC Mode Toggle Card */}
+      {user?.role === 'admin' && onToggleDesktopView && (
+        <div className="bg-white rounded-3xl border border-slate-100 shadow-[0_2px_8px_rgba(0,0,0,0.02)] overflow-hidden">
+          <div className="w-full p-4 flex items-center justify-between text-left">
+            <div className="flex items-center gap-2.5 min-w-0 pr-2">
+              <div className="p-2 rounded-xl bg-emerald-50 text-[#176e57] flex-shrink-0">
+                {isDesktopView ? <Smartphone className="w-4 h-4" /> : <Monitor className="w-4 h-4" />}
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wide truncate">
+                  {isDesktopView ? 'Switch to Mobile View' : 'Switch to PC Widescreen Mode'}
+                </h3>
+                <p className="text-[10px] text-slate-400 truncate">
+                  {isDesktopView ? 'Return app to mobile container (448px)' : 'Unfold app across widescreen desktop monitors'}
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={onToggleDesktopView}
+              className="px-3.5 py-1.5 rounded-xl bg-[#176e57] hover:bg-[#135c49] active:scale-95 text-white font-bold text-xs transition shadow-xs flex items-center gap-1.5 flex-shrink-0"
+            >
+              {isDesktopView ? (
+                <>
+                  <Smartphone className="w-3.5 h-3.5" />
+                  <span>Phone View</span>
+                </>
+              ) : (
+                <>
+                  <Monitor className="w-3.5 h-3.5" />
+                  <span>PC View</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Experience Accordion */}
       <div className="bg-white rounded-3xl border border-slate-100 shadow-[0_2px_8px_rgba(0,0,0,0.02)] overflow-hidden">
         <button
           type="button"
@@ -433,7 +527,7 @@ export default function Profile({ user, onLogout, assignments = {} }) {
         )}
       </div>
 
-      {/* 2. SECURITY & PASSWORD */}
+      {/* Security & Password Form */}
       <div className="bg-white rounded-3xl border border-slate-100 shadow-[0_2px_8px_rgba(0,0,0,0.02)] overflow-hidden">
         <button
           type="button"
@@ -461,52 +555,86 @@ export default function Profile({ user, onLogout, assignments = {} }) {
         {openSections.security && (
           <div className="p-4 pt-3 border-t border-slate-100 animate-sheet-up">
             <form onSubmit={handlePasswordChange} className="space-y-3 text-xs">
+              
+              {/* Current Password Field */}
               <div>
                 <label className="text-[11px] font-bold text-slate-700 block mb-1">
                   Current Password:
                 </label>
-                <input
-                  type="password"
-                  required
-                  value={currentPassInput}
-                  onChange={(e) => setCurrentPassInput(e.target.value)}
-                  placeholder="Enter current password"
-                  className="w-full p-2.5 border border-slate-200 rounded-xl bg-white text-slate-800 focus:outline-none focus:border-[#176e57]"
-                />
+                <div className="relative">
+                  <input
+                    type={showCurrentPass ? 'text' : 'password'}
+                    required
+                    value={currentPassInput}
+                    onChange={(e) => setCurrentPassInput(e.target.value)}
+                    placeholder="Enter current password"
+                    className="w-full pl-3 pr-10 py-2.5 border border-slate-200 rounded-xl bg-white text-slate-800 focus:outline-none focus:border-[#176e57]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowCurrentPass(!showCurrentPass)}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 transition"
+                    title={showCurrentPass ? 'Hide password' : 'Show password'}
+                  >
+                    {showCurrentPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
 
+              {/* New Password Field */}
               <div>
                 <label className="text-[11px] font-bold text-slate-700 block mb-1">
                   New Password (min 6 chars):
                 </label>
-                <input
-                  type="password"
-                  required
-                  value={newPassInput}
-                  onChange={(e) => setNewPassInput(e.target.value)}
-                  placeholder="Enter new password"
-                  className="w-full p-2.5 border border-slate-200 rounded-xl bg-white text-slate-800 focus:outline-none focus:border-[#176e57]"
-                />
+                <div className="relative">
+                  <input
+                    type={showNewPass ? 'text' : 'password'}
+                    required
+                    value={newPassInput}
+                    onChange={(e) => setNewPassInput(e.target.value)}
+                    placeholder="Enter new password"
+                    className="w-full pl-3 pr-10 py-2.5 border border-slate-200 rounded-xl bg-white text-slate-800 focus:outline-none focus:border-[#176e57]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowNewPass(!showNewPass)}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 transition"
+                    title={showNewPass ? 'Hide password' : 'Show password'}
+                  >
+                    {showNewPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
 
+              {/* Confirm Password Field */}
               <div>
                 <label className="text-[11px] font-bold text-slate-700 block mb-1">
                   Confirm New Password:
                 </label>
-                <input
-                  type="password"
-                  required
-                  value={confirmPassInput}
-                  onChange={(e) => setConfirmPassInput(e.target.value)}
-                  placeholder="Confirm new password"
-                  className="w-full p-2.5 border border-slate-200 rounded-xl bg-white text-slate-800 focus:outline-none focus:border-[#176e57]"
-                />
+                <div className="relative">
+                  <input
+                    type={showConfirmPass ? 'text' : 'password'}
+                    required
+                    value={confirmPassInput}
+                    onChange={(e) => setConfirmPassInput(e.target.value)}
+                    placeholder="Confirm new password"
+                    className="w-full pl-3 pr-10 py-2.5 border border-slate-200 rounded-xl bg-white text-slate-800 focus:outline-none focus:border-[#176e57]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmPass(!showConfirmPass)}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 transition"
+                    title={showConfirmPass ? 'Hide password' : 'Show password'}
+                  >
+                    {showConfirmPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
 
               <button
                 type="submit"
                 disabled={isUpdating}
-                className="w-full py-2.5 bg-[#176e57] hover:bg-[#135c49] active:scale-[0.98] text-white font-bold rounded-xl transition shadow-xs flex items-center justify-center gap-1.5"
+                className="w-full py-2.5 bg-[#176e57] hover:bg-[#135c49] active:scale-[0.98] text-white font-bold rounded-xl transition shadow-xs flex items-center justify-center gap-1.5 disabled:opacity-80"
               >
                 <Check className="w-4 h-4" />
                 <span>{isUpdating ? 'Saving...' : 'Update Password'}</span>
@@ -516,7 +644,7 @@ export default function Profile({ user, onLogout, assignments = {} }) {
         )}
       </div>
 
-      {/* 3. TWO-FACTOR TRUSTED DEVICES */}
+      {/* Two-Factor Trusted Devices */}
       <div className="bg-white rounded-3xl border border-slate-100 shadow-[0_2px_8px_rgba(0,0,0,0.02)] overflow-hidden">
         <button
           type="button"
@@ -554,6 +682,7 @@ export default function Profile({ user, onLogout, assignments = {} }) {
         )}
       </div>
 
+      {/* Log Out */}
       <button
         type="button"
         onClick={() => setShowLogoutConfirm(true)}
@@ -563,9 +692,10 @@ export default function Profile({ user, onLogout, assignments = {} }) {
         <span>Log Out of Session</span>
       </button>
 
+      {/* Logout Confirmation Dialog */}
       {showLogoutConfirm && typeof document !== 'undefined' && createPortal(
         <div 
-          className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-backdrop text-slate-800 select-none"
+          className="fixed inset-0 z-[300] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-backdrop text-slate-800 select-none"
           onClick={() => setShowLogoutConfirm(false)}
         >
           <div 
@@ -581,7 +711,7 @@ export default function Profile({ user, onLogout, assignments = {} }) {
                 Log Out of Session?
               </h3>
               <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                End active session for <strong>{user?.name}</strong>?
+                End active custodial session for <strong>{user?.name}</strong>?
               </p>
             </div>
 

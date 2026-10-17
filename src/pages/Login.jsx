@@ -5,6 +5,7 @@ import sjcLogo from '../assets/Logo.jpg';
 import schoolBg from '../assets/School.jpg';
 import CaptchaModal from '../components/CaptchaModal';
 import { supabase } from '../data/supabaseClient';
+import { hashPassword, sanitizeUser } from '../utils/security';
 import { 
   User, 
   Lock, 
@@ -19,56 +20,15 @@ import {
   CheckCircle2, 
   Loader2, 
   Smartphone, 
-  KeyRound 
+  KeyRound,
+  ShieldAlert as ShieldIcon
 } from 'lucide-react';
 
 const EMAILJS_SERVICE_ID = 'service_0od3tyo';
 const EMAILJS_TEMPLATE_ID = 'template_cwipfdc';
 const EMAILJS_PUBLIC_KEY = 'SKoJDpKyhviN9MWEQ';
 
-// Fallback SJC Custodial Team Roster
-const OFFICIAL_STAFF_ROSTER = [
-  { id: '001', name: 'Kuya Bert', role: 'staff', access_level: 1, email: 'vhma.nacion.sjc@phinmaed.com' },
-  { id: '002', name: 'Ate Linda', role: 'staff', access_level: 1, email: 'cami.ubuwon.sjc@phinmaed.com' },
-  { id: '003', name: 'Kuya Jun', role: 'staff', access_level: 1, email: 'anco.alfanta.sjc@phinmaed.com' },
-  { id: '004', name: 'Ate Marites', role: 'staff', access_level: 1, email: 'rade.copones.sjc@phinmaed.com' },
-  { id: '005', name: 'Kuya Jomar', role: 'staff', access_level: 1, email: 'vhma.nacion.sjc@phinmaed.com' },
-  { id: '06-2223-033162', name: 'Kuya Bert', role: 'staff', access_level: 1, email: 'vhma.nacion.sjc@phinmaed.com' }
-];
-
-const getDestinationEmail = (userObjOrId) => {
-  if (typeof userObjOrId === 'object' && userObjOrId?.email) {
-    return userObjOrId.email;
-  }
-  const id = String(typeof userObjOrId === 'object' ? userObjOrId.id : userObjOrId || '').trim();
-  if (id === '002' || id === '2' || id.endsWith('02')) {
-    return 'cami.ubuwon.sjc@phinmaed.com';
-  }
-  if (id === '003' || id === '3' || id.endsWith('03')) {
-    return 'anco.alfanta.sjc@phinmaed.com';
-  }
-  if (id === '004' || id === '4' || id.endsWith('04')) {
-    return 'rade.copones.sjc@phinmaed.com';
-  }
-  return 'vhma.nacion.sjc@phinmaed.com';
-};
-
-const PHINMA_STAFF_EMAILS = {
-  '001': 'vhma.nacion.sjc@phinmaed.com',
-  '002': 'cami.ubuwon.sjc@phinmaed.com',
-  '003': 'anco.alfanta.sjc@phinmaed.com',
-  '004': 'rade.copones.sjc@phinmaed.com',
-  '005': 'vhma.nacion.sjc@phinmaed.com',
-  'admin': 'vhma.nacion.sjc@phinmaed.com'
-};
-
 const TRUST_DURATION_DAYS = 30;
-
-const getAccountPasswordFallback = (accountId) => {
-  const custom = localStorage.getItem(`sjc_pass_${accountId}`);
-  if (custom) return custom;
-  return accountId === 'admin' ? 'password123' : 'sjc1234';
-};
 
 const isDeviceTrustedForAccount = (accountId) => {
   try {
@@ -111,7 +71,7 @@ const maskEmail = (email) => {
 
 export default function Login({ onLoginSuccess }) {
   const navigate = useNavigate();
-  const [loginMode, setLoginMode] = useState('staff');
+  const [loginMode, setLoginMode] = useState('staff'); // 'staff' | 'admin'
 
   const [staffId, setStaffId] = useState(() => {
     return localStorage.getItem('sjc_remembered_staff_id') || '';
@@ -123,7 +83,6 @@ export default function Login({ onLoginSuccess }) {
     return Boolean(localStorage.getItem('sjc_remembered_staff_id'));
   });
 
-  // Staged User & Challenge Gate
   const [showCaptchaModal, setShowCaptchaModal] = useState(false);
   const [stagedUser, setStagedUser] = useState(null);
 
@@ -134,7 +93,7 @@ export default function Login({ onLoginSuccess }) {
   const [showAdminToast, setShowAdminToast] = useState(false);
   const [lastAttemptTime, setLastAttemptTime] = useState(0);
 
-  // 2FA Flow States
+  // 2FA States
   const [showTwoFactor, setShowTwoFactor] = useState(false);
   const [pendingUser, setPendingUser] = useState(null);
   const [displayedMaskedEmail, setDisplayedMaskedEmail] = useState('');
@@ -147,7 +106,14 @@ export default function Login({ onLoginSuccess }) {
   const [emailSentAlert, setEmailSentAlert] = useState(false);
   const [trustThisDevice, setTrustThisDevice] = useState(true);
 
-  // Forgot / Reset Password Flow States
+  // First-Time Setup States
+  const [showFirstLoginModal, setShowFirstLoginModal] = useState(false);
+  const [firstLoginNewPass, setFirstLoginNewPass] = useState('');
+  const [firstLoginConfirmPass, setFirstLoginConfirmPass] = useState('');
+  const [firstLoginError, setFirstLoginError] = useState('');
+  const [isSavingFirstPass, setIsSavingFirstPass] = useState(false);
+
+  // Forgot Password States
   const [showForgotModal, setShowForgotModal] = useState(false);
   const [forgotId, setForgotId] = useState('');
   const [forgotStep, setForgotStep] = useState(1);
@@ -159,7 +125,6 @@ export default function Login({ onLoginSuccess }) {
   const [newPasswordInput, setNewPasswordInput] = useState('');
   const [resetSuccess, setResetSuccess] = useState(false);
 
-  // Button micro-states
   const [isCheckingCredentials, setIsCheckingCredentials] = useState(false);
   const [isVerifyingCode, setIsVerifyingCode] = useState(false);
 
@@ -171,12 +136,13 @@ export default function Login({ onLoginSuccess }) {
     return () => clearInterval(interval);
   }, [showTwoFactor, resendTimer]);
 
+  // Hidden 5-tap toggle (No automatic username prefill)
   const handleLogoTap = () => {
     const nextTaps = tapCount + 1;
     if (nextTaps >= 5) {
       const nextMode = loginMode === 'staff' ? 'admin' : 'staff';
       setLoginMode(nextMode);
-      setStaffId(nextMode === 'admin' ? 'admin' : '');
+      setStaffId(''); // Clean field, no automatic "admin" populated
       setPassword('');
       setTapCount(0);
       setShowAdminToast(true);
@@ -189,7 +155,7 @@ export default function Login({ onLoginSuccess }) {
   const dispatchOtp = async (userObj, targetEmailDisplay, isRecovery = false) => {
     const newOtp = Math.floor(100000 + Math.random() * 900000).toString();
     const currentTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const destinationEmail = userObj.email || getDestinationEmail(userObj);
+    const destinationEmail = userObj.email || `${String(userObj.id).toLowerCase()}@phinmaed.com`;
 
     if (isRecovery) {
       setForgotOtp(newOtp);
@@ -223,99 +189,112 @@ export default function Login({ onLoginSuccess }) {
         setTimeout(() => setEmailSentAlert(false), 4200);
       }
     } catch (err) {
-      console.error('Failed to send verification email:', err);
+      console.error('Failed to dispatch verification email:', err);
     } finally {
       if (isRecovery) setIsForgotSending(false);
       else setIsSendingEmail(false);
     }
   };
 
-  // Authenticate against database profiles table
+  // SECURE AUTHENTICATION HANDLER
   const handlePasswordSubmit = async (e) => {
     e.preventDefault();
     setErrorMsg('');
 
     const now = Date.now();
-    if (now - lastAttemptTime < 1800) {
-      setErrorMsg('Please wait a moment before trying again.');
-      return;
-    }
+    if (now - lastAttemptTime < 1000) return;
     setLastAttemptTime(now);
 
     setIsCheckingCredentials(true);
-    const cleanInput = staffId.trim();
+    const cleanId = staffId.trim();
+    const cleanLower = cleanId.toLowerCase();
 
     try {
+      const inputHash = await hashPassword(password);
+
+      // 1. Query Supabase for the specific user entered
       const { data: dbUser, error } = await supabase
         .from('profiles')
         .select('*')
-        .ilike('id', cleanInput)
+        .ilike('id', cleanId)
         .maybeSingle();
 
-      if (!error && dbUser) {
-        if (dbUser.password === password) {
-          if (loginMode === 'admin' && dbUser.role !== 'admin' && Number(dbUser.access_level) < 2) {
-            setErrorMsg('Access Denied: This account lacks Supervisor credentials.');
-            setErrorKey((prev) => prev + 1);
-            setIsCheckingCredentials(false);
-            return;
+      if (error || !dbUser) {
+        setErrorMsg('Invalid ID or password. Please verify your credentials.');
+        setErrorKey((prev) => prev + 1);
+        setIsCheckingCredentials(false);
+        return;
+      }
+
+      const isUserAdmin = dbUser.role === 'admin' || Number(dbUser.access_level) >= 2;
+
+      // 2. Strict portal separation based on actual account permissions (allows Stitch/006 or admin)
+      if (loginMode === 'staff' && isUserAdmin) {
+        setErrorMsg('Invalid ID or password. Please verify your credentials.');
+        setErrorKey((prev) => prev + 1);
+        setIsCheckingCredentials(false);
+        return;
+      }
+
+      if (loginMode === 'admin' && !isUserAdmin) {
+        setErrorMsg('Invalid ID or password. Please verify your credentials.');
+        setErrorKey((prev) => prev + 1);
+        setIsCheckingCredentials(false);
+        return;
+      }
+
+      // 3. Credential verification
+      let isValidPassword = false;
+
+      // Primary: Authenticate securely via Supabase Auth
+      if (dbUser.email) {
+        try {
+          const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
+            email: dbUser.email,
+            password: password
+          });
+
+          if (!authErr && authData?.user) {
+            isValidPassword = true;
           }
-
-          const authenticatedUser = {
-            id: dbUser.id,
-            name: dbUser.name || (dbUser.role === 'admin' ? 'Facilities Supervisor' : 'Staff Member'),
-            email: dbUser.email || null,
-            role: dbUser.role || (loginMode === 'admin' ? 'admin' : 'staff'),
-            access_level: dbUser.access_level || (dbUser.role === 'admin' ? 2 : 1),
-            is_first_login: Boolean(dbUser.is_first_login),
-            avatar: dbUser.avatar || null
-          };
-
-          setStagedUser(authenticatedUser);
-          setIsCheckingCredentials(false);
-          setShowCaptchaModal(true);
-          return;
-        } else {
-          setErrorMsg('Incorrect password. Please verify your credentials.');
-          setErrorKey((prev) => prev + 1);
-          setIsCheckingCredentials(false);
-          return;
-        }
+        } catch (_) {}
       }
-    } catch (dbErr) {
-      console.warn('Database auth connection failed, testing local fallback:', dbErr);
-    }
 
-    // Offline / Local fallback if Supabase is unreachable
-    let fallbackUser = null;
-    if (loginMode === 'staff') {
-      const foundStaff = OFFICIAL_STAFF_ROSTER.find(
-        (s) => 
-          s.id.toLowerCase() === cleanInput.toLowerCase() || 
-          s.id.replace(/^0+/, '') === cleanInput.replace(/^0+/, '')
-      );
+      // Fallback: Check local hash cache or direct password (if not yet migrated)
+      if (!isValidPassword) {
+        const localHash = localStorage.getItem(`sjc_pass_hash_${cleanLower}`);
+        const dbPass = dbUser.password;
 
-      const accountKey = foundStaff ? foundStaff.id : cleanInput;
-      const validPassword = getAccountPasswordFallback(accountKey);
-
-      if (foundStaff && password === validPassword) {
-        fallbackUser = { ...foundStaff, is_first_login: false };
-      } else if (cleanInput && password === validPassword) {
-        fallbackUser = { id: cleanInput, name: `Staff Member (${cleanInput})`, role: 'staff', access_level: 1, is_first_login: false };
+        isValidPassword = (localHash && localHash === inputHash) ||
+                          (dbPass && dbPass === password);
       }
-    } else {
-      const validAdminPass = getAccountPasswordFallback('admin');
-      if (cleanInput.toLowerCase() === 'admin' && password === validAdminPass) {
-        fallbackUser = { id: 'admin', name: 'Facilities Supervisor', role: 'admin', access_level: 2, is_first_login: false };
-      }
-    }
 
-    if (fallbackUser) {
-      setStagedUser(fallbackUser);
-      setIsCheckingCredentials(false);
-      setShowCaptchaModal(true);
-    } else {
-      setErrorMsg(loginMode === 'admin' ? 'Invalid supervisor credentials.' : 'Invalid staff ID or password.');
+      if (isValidPassword) {
+        const isFirstLogin = Boolean(dbUser.is_first_login);
+
+        const authenticatedUser = sanitizeUser({
+          id: dbUser.id,
+          name: dbUser.name || (isUserAdmin ? 'Facilities Supervisor' : 'Staff Member'),
+          email: dbUser.email || null,
+          role: dbUser.role || (isUserAdmin ? 'admin' : 'staff'),
+          access_level: dbUser.access_level || (isUserAdmin ? 2 : 1),
+          is_first_login: isFirstLogin,
+          avatar: dbUser.avatar || null,
+          auth_user_id: dbUser.auth_user_id || null
+        });
+
+        setStagedUser(authenticatedUser);
+        setIsCheckingCredentials(false);
+        setShowCaptchaModal(true);
+        return;
+      } else {
+        setErrorMsg('Invalid ID or password. Please verify your credentials.');
+        setErrorKey((prev) => prev + 1);
+        setIsCheckingCredentials(false);
+      }
+    } catch (err) {
+      console.warn('Authentication error:', err);
+      setErrorMsg('Authentication service temporarily unavailable.');
       setErrorKey((prev) => prev + 1);
       setIsCheckingCredentials(false);
     }
@@ -331,12 +310,18 @@ export default function Login({ onLoginSuccess }) {
       localStorage.removeItem('sjc_remembered_staff_id');
     }
 
-    if (isDeviceTrustedForAccount(stagedUser.id)) {
-      onLoginSuccess(stagedUser, rememberMe);
+    if (stagedUser.is_first_login) {
+      setPendingUser(stagedUser);
+      setShowFirstLoginModal(true);
       return;
     }
 
-    const targetEmail = stagedUser.email || PHINMA_STAFF_EMAILS[stagedUser.id] || `${stagedUser.name.toLowerCase().replace(/\s+/g, '')}@phinmaed.com`;
+    if (isDeviceTrustedForAccount(stagedUser.id)) {
+      onLoginSuccess(sanitizeUser(stagedUser), rememberMe);
+      return;
+    }
+
+    const targetEmail = stagedUser.email || `${String(stagedUser.id).toLowerCase()}@phinmaed.com`;
     const masked = maskEmail(targetEmail);
 
     setPendingUser(stagedUser);
@@ -349,7 +334,6 @@ export default function Login({ onLoginSuccess }) {
     dispatchOtp(stagedUser, targetEmail, false);
   };
 
-  // Handles single digit typing and mobile autofill multi-digit strings
   const handleOtpDigitChange = (index, value) => {
     const clean = value.replace(/\D/g, '');
     if (!clean && value !== '') return;
@@ -377,7 +361,6 @@ export default function Login({ onLoginSuccess }) {
     }
   };
 
-  // Dedicated paste handler to distribute across all 6 inputs
   const handleOtpPaste = (e) => {
     e.preventDefault();
     const pasteData = e.clipboardData.getData('text');
@@ -420,13 +403,79 @@ export default function Login({ onLoginSuccess }) {
         }
 
         setIsVerifyingCode(false);
-        onLoginSuccess(pendingUser, rememberMe);
+
+        if (pendingUser?.is_first_login) {
+          setShowTwoFactor(false);
+          setShowFirstLoginModal(true);
+        } else {
+          onLoginSuccess(sanitizeUser(pendingUser), rememberMe);
+        }
       } else {
         setOtpError('Invalid 6-digit security code. Please check your email and try again.');
         setOtpErrorKey((prev) => prev + 1);
         setIsVerifyingCode(false);
       }
     }, 300);
+  };
+
+  const handleSaveFirstLoginPassword = async (e) => {
+    e.preventDefault();
+    setFirstLoginError('');
+
+    if (firstLoginNewPass.length < 6) {
+      setFirstLoginError('Password must be at least 6 characters long.');
+      return;
+    }
+
+    if (firstLoginNewPass !== firstLoginConfirmPass) {
+      setFirstLoginError('Passwords do not match.');
+      return;
+    }
+
+    if (firstLoginNewPass === password) {
+      setFirstLoginError('New password must be different from your current setup password.');
+      return;
+    }
+
+    setIsSavingFirstPass(true);
+
+    try {
+      const newHash = await hashPassword(firstLoginNewPass);
+
+      // Update Supabase Auth password if linked
+      if (pendingUser?.auth_user_id) {
+        try {
+          await supabase.auth.updateUser({ password: firstLoginNewPass });
+        } catch (_) {}
+      }
+
+      // Update profiles record
+      const updatePayload = { is_first_login: false };
+      if (pendingUser?.password !== undefined) {
+        updatePayload.password = firstLoginNewPass;
+      }
+
+      await supabase
+        .from('profiles')
+        .update(updatePayload)
+        .eq('id', pendingUser.id);
+
+      localStorage.setItem(`sjc_pass_hash_${String(pendingUser.id).toLowerCase()}`, newHash);
+      localStorage.removeItem(`sjc_pass_${String(pendingUser.id).toLowerCase()}`);
+
+      const updatedUser = {
+        ...pendingUser,
+        is_first_login: false
+      };
+
+      setIsSavingFirstPass(false);
+      setShowFirstLoginModal(false);
+      onLoginSuccess(sanitizeUser(updatedUser), rememberMe);
+    } catch (err) {
+      console.warn('Failed to update permanent password:', err);
+      setIsSavingFirstPass(false);
+      setFirstLoginError('Failed to save password. Please try again.');
+    }
   };
 
   const openForgotFlow = () => {
@@ -458,33 +507,26 @@ export default function Login({ onLoginSuccess }) {
         .maybeSingle();
 
       if (dbUser) {
-        found = { id: dbUser.id, name: dbUser.name, role: dbUser.role, email: dbUser.email };
+        found = { 
+          id: dbUser.id, 
+          name: dbUser.name, 
+          role: dbUser.role, 
+          email: dbUser.email,
+          auth_user_id: dbUser.auth_user_id,
+          password: dbUser.password
+        };
       }
-    } catch {
-      // Fallback lookup
-    }
+    } catch (_) {}
 
     if (!found) {
-      if (query.toLowerCase() === 'admin') {
-        found = { id: 'admin', name: 'Facilities Supervisor', role: 'admin', email: 'vhma.nacion.sjc@phinmaed.com' };
-      } else {
-        found = OFFICIAL_STAFF_ROSTER.find(
-          (s) => 
-            s.id.toLowerCase() === query.toLowerCase() || 
-            s.id.replace(/^0+/, '') === query.replace(/^0+/, '')
-        );
-      }
-    }
-
-    if (!found) {
-      setForgotError('Staff ID not found in institutional records.');
+      setErrorMsg('Invalid ID or password. Please verify your credentials.');
       return;
     }
 
     setForgotFoundUser(found);
     setForgotStep(2);
 
-    const targetEmail = found.email || PHINMA_STAFF_EMAILS[found.id] || `${found.name.toLowerCase().replace(/\s+/g, '')}@phinmaed.com`;
+    const targetEmail = found.email || `${found.id}@phinmaed.com`;
     await dispatchOtp(found, targetEmail, true);
   };
 
@@ -501,61 +543,65 @@ export default function Login({ onLoginSuccess }) {
 
   const handleSaveNewPassword = async (e) => {
     e.preventDefault();
-    if (!newPasswordInput.trim() || newPasswordInput.length < 4) {
-      setForgotError('New password must be at least 4 characters long.');
+    if (!newPasswordInput.trim() || newPasswordInput.length < 6) {
+      setForgotError('New password must be at least 6 characters long.');
       return;
     }
 
     const cleanPass = newPasswordInput.trim();
 
     try {
+      const newHash = await hashPassword(cleanPass);
+
+      if (forgotFoundUser?.auth_user_id) {
+        try {
+          await supabase.auth.updateUser({ password: cleanPass });
+        } catch (_) {}
+      }
+
+      const updatePayload = { is_first_login: false };
+      if (forgotFoundUser?.password !== undefined) {
+        updatePayload.password = cleanPass;
+      }
+
       await supabase
         .from('profiles')
-        .update({ password: cleanPass, is_first_login: false })
+        .update(updatePayload)
         .eq('id', forgotFoundUser.id);
+
+      localStorage.setItem(`sjc_pass_hash_${String(forgotFoundUser.id).toLowerCase()}`, newHash);
+      localStorage.removeItem(`sjc_pass_${String(forgotFoundUser.id).toLowerCase()}`);
+
+      setResetSuccess(true);
+
+      setTimeout(() => {
+        setShowForgotModal(false);
+        setStaffId(forgotFoundUser.id);
+        setPassword('');
+      }, 1200);
     } catch (err) {
-      console.warn('Failed to save to cloud database, saving locally:', err);
+      console.warn('Failed to update password hash:', err);
+      setForgotError('Failed to encrypt and save new password.');
     }
-
-    localStorage.setItem(`sjc_pass_${forgotFoundUser.id}`, cleanPass);
-    setResetSuccess(true);
-
-    setTimeout(() => {
-      setShowForgotModal(false);
-      setStaffId(forgotFoundUser.id);
-      setPassword(cleanPass);
-    }, 1200);
   };
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col justify-between relative overflow-hidden font-sans">
       
-      {/* Toast Keyframes: Fade in from top, hold visibly, then gently dissolve up */}
+      {/* Toast Keyframes */}
       <style>{`
         @keyframes toastFadeInOut {
-          0% {
-            opacity: 0;
-            transform: translateY(-10px) scale(0.96);
-          }
-          10% {
-            opacity: 1;
-            transform: translateY(0) scale(1);
-          }
-          85% {
-            opacity: 1;
-            transform: translateY(0) scale(1);
-          }
-          100% {
-            opacity: 0;
-            transform: translateY(-8px) scale(0.97);
-          }
+          0% { opacity: 0; transform: translateY(-10px) scale(0.96); }
+          10% { opacity: 1; transform: translateY(0) scale(1); }
+          85% { opacity: 1; transform: translateY(0) scale(1); }
+          100% { opacity: 0; transform: translateY(-8px) scale(0.97); }
         }
         .animate-toast-smooth {
           animation: toastFadeInOut 3.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
         }
       `}</style>
 
-      {/* Floating 2FA Dispatched Toast (Positioned cleanly right below header curve) */}
+      {/* Floating 2FA Dispatched Toast */}
       {emailSentAlert && typeof document !== 'undefined' && createPortal(
         <div className="fixed top-[215px] inset-x-0 z-[150] max-w-sm mx-auto px-4 pointer-events-none animate-toast-smooth select-none">
           <div className="pointer-events-auto p-3 bg-emerald-50/95 backdrop-blur-sm border border-emerald-300 text-emerald-800 text-xs font-semibold rounded-2xl flex items-center gap-2.5 shadow-xl">
@@ -566,7 +612,7 @@ export default function Login({ onLoginSuccess }) {
         document.body
       )}
 
-      {/* Floating Mode Switch Banner (Clean spacing above Sign In) */}
+      {/* Mode Switch Banner */}
       {showAdminToast && typeof document !== 'undefined' && createPortal(
         <div className="fixed top-[220px] inset-x-0 z-[150] max-w-sm mx-auto px-4 pointer-events-none animate-toast-smooth select-none">
           <div className="pointer-events-auto p-3 bg-amber-50/95 backdrop-blur-sm border border-amber-300 text-amber-900 text-xs font-semibold rounded-2xl flex items-center gap-2.5 shadow-xl">
@@ -592,8 +638,7 @@ export default function Login({ onLoginSuccess }) {
           <button
             type="button"
             onClick={handleLogoTap}
-            title="Tap 5 times for Admin"
-            className="w-20 h-20 mx-auto rounded-2xl bg-white shadow-2xl p-1.5 flex items-center justify-center mb-3 active:scale-90 transition-transform duration-150 overflow-hidden ring-2 ring-white/80"
+            className="w-20 h-20 mx-auto rounded-2xl bg-white shadow-2xl p-1.5 flex items-center justify-center mb-3 active:scale-90 transition-transform duration-150 overflow-hidden ring-2 ring-white/80 cursor-default"
           >
             <img
               src={sjcLogo}
@@ -611,10 +656,10 @@ export default function Login({ onLoginSuccess }) {
         </div>
       </div>
 
-      {/* Main Screen Content */}
+      {/* Main Content Area */}
       <div className="flex-1 flex flex-col justify-between">
         {!showTwoFactor ? (
-          /* Sign In Screen (pt-16 creates clean whitespace below the floating toast) */
+          /* Sign In Screen */
           <div className="flex-1 px-6 pt-16 pb-4">
             <div className="mb-5">
               <h2 className="text-xl font-bold text-slate-800">
@@ -648,7 +693,7 @@ export default function Login({ onLoginSuccess }) {
                   autoComplete="off"
                   value={staffId}
                   onChange={(e) => setStaffId(e.target.value)}
-                  placeholder={loginMode === 'staff' ? 'Staff ID' : 'Admin Username'}
+                  placeholder={loginMode === 'staff' ? 'Staff ID' : 'Admin ID or Username'}
                   className="w-full pl-10 pr-4 py-2.5 border border-slate-300 rounded-xl text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#176e57] focus:ring-2 focus:ring-[#176e57]/15 bg-white transition duration-150"
                 />
               </div>
@@ -698,7 +743,6 @@ export default function Login({ onLoginSuccess }) {
                 </button>
               </div>
 
-              {/* Submit Button */}
               <button
                 type="submit"
                 disabled={isCheckingCredentials}
@@ -717,7 +761,6 @@ export default function Login({ onLoginSuccess }) {
                 )}
               </button>
 
-              {/* Faculty Call Link */}
               <div className="pt-2">
                 <div className="p-3 bg-amber-50/70 border border-amber-200/80 rounded-2xl flex items-center justify-between text-xs">
                   <div className="flex items-center gap-2">
@@ -739,7 +782,7 @@ export default function Login({ onLoginSuccess }) {
             </form>
           </div>
         ) : (
-          /* 2FA Verification Screen (pt-16 aligns with the Sign In spacing) */
+          /* 2FA Verification Screen */
           <div className="flex-1 px-6 pt-16 pb-6 space-y-4 page-transition">
             <div className="text-center space-y-1">
               <div className="w-12 h-12 rounded-2xl bg-emerald-100 text-[#176e57] mx-auto flex items-center justify-center mb-2 animate-pop">
@@ -852,11 +895,91 @@ export default function Login({ onLoginSuccess }) {
           </div>
         )}
 
-        {/* Footer */}
         <div className="pb-6 text-center text-xs text-slate-400 border-t border-slate-200/60 pt-3">
           Powered by <strong className="text-slate-600 font-medium">the power of friendship</strong>
         </div>
       </div>
+
+      {/* Mandatory First-Time Password Change Modal */}
+      {showFirstLoginModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-backdrop">
+          <div className="bg-white rounded-3xl p-6 shadow-2xl border border-slate-100 max-w-sm w-full space-y-4 animate-sheet-up">
+            
+            <div className="text-center space-y-1">
+              <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-800 mx-auto flex items-center justify-center mb-1 animate-pop">
+                <ShieldIcon className="w-6 h-6" />
+              </div>
+              <h3 className="text-base font-bold text-slate-800">
+                First-Time Security Setup
+              </h3>
+              <p className="text-xs text-slate-500">
+                You logged in with a temporary setup password. Please create your permanent personal password to secure your account.
+              </p>
+            </div>
+
+            {firstLoginError && (
+              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium rounded-xl flex items-center gap-2 animate-shake">
+                <AlertCircle className="w-4 h-4 flex-shrink-0 text-rose-600" />
+                <span>{firstLoginError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveFirstLoginPassword} className="space-y-3">
+              <div>
+                <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                  New Password (min 6 characters):
+                </label>
+                <div className="relative">
+                  <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                  <input
+                    type="password"
+                    required
+                    value={firstLoginNewPass}
+                    onChange={(e) => setFirstLoginNewPass(e.target.value)}
+                    placeholder="Enter permanent password"
+                    className="w-full pl-10 pr-3 py-2 border border-slate-200 rounded-xl text-xs text-slate-800 focus:outline-none focus:border-[#176e57]"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                  Confirm Permanent Password:
+                </label>
+                <div className="relative">
+                  <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                  <input
+                    type="password"
+                    required
+                    value={firstLoginConfirmPass}
+                    onChange={(e) => setFirstLoginConfirmPass(e.target.value)}
+                    placeholder="Confirm permanent password"
+                    className="w-full pl-10 pr-3 py-2 border border-slate-200 rounded-xl text-xs text-slate-800 focus:outline-none focus:border-[#176e57]"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={isSavingFirstPass}
+                className="w-full py-2.5 bg-[#176e57] hover:bg-[#135c49] active:scale-95 text-white font-bold rounded-xl text-xs transition shadow-xs flex items-center justify-center gap-1.5 disabled:opacity-80"
+              >
+                {isSavingFirstPass ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Encrypting & Saving...</span>
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Save Password & Open App</span>
+                  </>
+                )}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Forgot Password Modal */}
       {showForgotModal && (
@@ -966,7 +1089,7 @@ export default function Login({ onLoginSuccess }) {
                     <div className="relative">
                       <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
                       <input
-                        type="text"
+                        type="password"
                         required
                         autoComplete="off"
                         value={newPasswordInput}
