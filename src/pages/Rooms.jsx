@@ -322,12 +322,21 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {}, is
           </div>
         </div>
 
-        <div className={isPcMode ? 'col-span-5' : 'w-full'}>
-          <div className="bg-white border border-slate-100 rounded-2xl shadow-[0_2px_12px_rgba(0,0,0,0.02)] overflow-hidden transition">
+        {/* Building Selector with Floating Overlay Menu */}
+        <div className={`relative ${isPcMode ? 'col-span-5' : 'w-full'} z-30`}>
+          {/* Backdrop to close overlay when clicking outside */}
+          {isBuildingDropdownOpen && (
+            <div 
+              className="fixed inset-0 z-30" 
+              onClick={() => setIsBuildingDropdownOpen(false)} 
+            />
+          )}
+
+          <div className="relative z-40 bg-white border border-slate-100 rounded-2xl shadow-[0_2px_12px_rgba(0,0,0,0.02)] transition">
             <button
               type="button"
               onClick={() => setIsBuildingDropdownOpen(!isBuildingDropdownOpen)}
-              className="w-full p-3 px-3.5 flex items-center justify-between text-left active:bg-slate-50 transition"
+              className="w-full p-3 px-3.5 flex items-center justify-between text-left active:bg-slate-50 transition rounded-2xl"
             >
               <div className="flex items-center gap-2.5">
                 <div className="w-7 h-7 rounded-xl bg-emerald-50 text-[#176e57] flex items-center justify-center font-bold flex-shrink-0">
@@ -350,50 +359,47 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {}, is
               </div>
             </button>
 
-            <div className={`grid transition-[grid-template-rows] duration-250 ease-out ${
-              isBuildingDropdownOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'
-            }`}>
-              <div className="overflow-hidden">
-                <div className="p-2 pt-1 border-t border-slate-100 space-y-1 bg-slate-50/40">
-                  {BUILDINGS.map((b) => {
-                    const isSelected = selectedBuilding === b.id;
+            {/* Floating Dropdown Overlay */}
+            {isBuildingDropdownOpen && (
+              <div className="absolute left-0 right-0 top-full mt-1.5 z-50 bg-white border border-slate-100/90 rounded-2xl shadow-xl overflow-hidden p-2 space-y-1 animate-dropdown">
+                {BUILDINGS.map((b) => {
+                  const isSelected = selectedBuilding === b.id;
 
-                    return (
-                      <button
-                        key={b.id}
-                        type="button"
-                        onClick={() => {
-                          setSelectedBuilding(b.id);
-                          setIsBuildingDropdownOpen(false);
-                        }}
-                        className={`w-full p-2.5 rounded-xl border text-left flex items-center justify-between transition active:scale-[0.98] ${
-                          isSelected
-                            ? 'bg-white border-emerald-300/80 shadow-2xs'
-                            : 'bg-white/80 hover:bg-white border-slate-100'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2.5">
-                          <div className={`w-7 h-7 rounded-xl flex items-center justify-center font-bold text-xs ${
-                            isSelected ? 'bg-[#176e57] text-white' : 'bg-slate-100 text-slate-600'
-                          }`}>
-                            {b.id[0]}
-                          </div>
-                          <span className="font-bold text-slate-800 text-xs">
-                            {b.name}
-                          </span>
+                  return (
+                    <button
+                      key={b.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedBuilding(b.id);
+                        setIsBuildingDropdownOpen(false);
+                      }}
+                      className={`w-full p-2.5 rounded-xl border text-left flex items-center justify-between transition active:scale-[0.98] ${
+                        isSelected
+                          ? 'bg-emerald-50/60 border-emerald-300/80 shadow-2xs'
+                          : 'bg-white hover:bg-slate-50 border-transparent hover:border-slate-100'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <div className={`w-7 h-7 rounded-xl flex items-center justify-center font-bold text-xs ${
+                          isSelected ? 'bg-[#176e57] text-white' : 'bg-slate-100 text-slate-600'
+                        }`}>
+                          {b.id[0]}
                         </div>
+                        <span className="font-bold text-slate-800 text-xs">
+                          {b.name}
+                        </span>
+                      </div>
 
-                        {isSelected && (
-                          <span className="p-1 rounded-md bg-[#176e57] text-white flex-shrink-0">
-                            <Check className="w-3.5 h-3.5" />
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
+                      {isSelected && (
+                        <span className="p-1 rounded-md bg-[#176e57] text-white flex-shrink-0">
+                          <Check className="w-3.5 h-3.5" />
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
-            </div>
+            )}
           </div>
         </div>
       </div>

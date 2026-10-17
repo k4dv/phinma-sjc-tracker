@@ -33,6 +33,8 @@ export default function Profile({
   const navigate = useNavigate();
   const fileInputRef = useRef(null);
 
+  const isAdmin = user?.role === 'admin' || Number(user?.access_level) >= 2;
+
   useEffect(() => {
     document.documentElement.classList.remove('dark');
     localStorage.removeItem('sjc_theme');
@@ -319,7 +321,7 @@ export default function Profile({
   };
 
   return (
-    <div className="p-4 space-y-3.5 pb-28 text-slate-800 max-w-md mx-auto">
+    <div className={`p-4 space-y-3.5 pb-28 text-slate-800 mx-auto transition-all duration-300 ${isDesktopView ? 'max-w-2xl' : 'max-w-md'}`}>
       
       {/* Toast Notifications */}
       {successMsg && typeof document !== 'undefined' && createPortal(
@@ -433,7 +435,7 @@ export default function Profile({
       </div>
 
       {/* Admin PC Mode Toggle Card */}
-      {user?.role === 'admin' && onToggleDesktopView && (
+      {isAdmin && onToggleDesktopView && (
         <div className="bg-white rounded-3xl border border-slate-100 shadow-[0_2px_8px_rgba(0,0,0,0.02)] overflow-hidden">
           <div className="w-full p-4 flex items-center justify-between text-left">
             <div className="flex items-center gap-2.5 min-w-0 pr-2">
@@ -442,10 +444,12 @@ export default function Profile({
               </div>
               <div className="min-w-0">
                 <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wide truncate">
-                  {isDesktopView ? 'Switch to Mobile View' : 'Switch to PC Widescreen Mode'}
+                  {isDesktopView ? 'Switch to Phone View' : 'View Desktop Mode'}
                 </h3>
                 <p className="text-[10px] text-slate-400 truncate">
-                  {isDesktopView ? 'Return app to mobile container (448px)' : 'Unfold app across widescreen desktop monitors'}
+                  {isDesktopView 
+                    ? 'Return app to standard mobile view (448px)' 
+                    : 'Unfold full desktop site view on this device'}
                 </p>
               </div>
             </div>
@@ -463,7 +467,7 @@ export default function Profile({
               ) : (
                 <>
                   <Monitor className="w-3.5 h-3.5" />
-                  <span>PC View</span>
+                  <span>Desktop Mode</span>
                 </>
               )}
             </button>

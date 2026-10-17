@@ -52,6 +52,26 @@ export default function App() {
   const [curtainStage, setCurtainStage] = useState('idle');
   const [curtainWidth, setCurtainWidth] = useState('mobile');
 
+  // Dynamic Mobile Viewport Switcher for true Desktop Mode on mobile devices
+  useEffect(() => {
+    let meta = document.querySelector('meta[name="viewport"]');
+    if (!meta) {
+      meta = document.createElement('meta');
+      meta.name = 'viewport';
+      document.head.appendChild(meta);
+    }
+
+    if (isWide) {
+      meta.setAttribute('content', 'width=1024, user-scalable=yes');
+    } else {
+      meta.setAttribute('content', 'width=device-width, initial-scale=1.0');
+    }
+
+    return () => {
+      meta.setAttribute('content', 'width=device-width, initial-scale=1.0');
+    };
+  }, [isWide]);
+
   // Seamless Widescreen <-> Phone Switcher with Zero Layout Leaks
   const handleToggleDesktopWithCurtain = () => {
     if (!isAdmin || curtainStage !== 'idle') return;
@@ -137,7 +157,16 @@ export default function App() {
   });
 
   const [supplies, setSupplies] = useState(INITIAL_SUPPLIES);
-  const [logs, setLogs] = useState(INITIAL_LOGS);
+  
+  const [logs, setLogs] = useState(() => {
+    try {
+      const cached = localStorage.getItem('sjc_cached_logs');
+      return cached ? JSON.parse(cached) : INITIAL_LOGS;
+    } catch {
+      return INITIAL_LOGS;
+    }
+  });
+
   const [assignments, setAssignments] = useState(INITIAL_ASSIGNMENTS);
   const [broadcast, setBroadcast] = useState(INITIAL_BROADCAST);
   const [onlineUsers, setOnlineUsers] = useState([]);
@@ -181,8 +210,8 @@ export default function App() {
           api.getSupplies().catch(() => null),
           supabase.from('assignments').select('*'),
           supabase.from('broadcast').select('*').limit(1),
-          supabase.from('logs').select('*').order('created_at', { ascending: false }).limit(20),
-          supabase.from('teacher_requests').select('*').order('created_at', { ascending: false }).limit(20)
+          supabase.from('logs').select('*').order('created_at', { ascending: false }).limit(25),
+          supabase.from('teacher_requests').select('*').order('created_at', { ascending: false }).limit(25)
         ]);
 
         let rawRooms = backendRooms;
@@ -248,7 +277,10 @@ export default function App() {
           });
         }
 
-        if (logsRes.data?.length) setLogs(logsRes.data);
+        if (logsRes.data?.length) {
+          setLogs(logsRes.data);
+          localStorage.setItem('sjc_cached_logs', JSON.stringify(logsRes.data));
+        }
 
         if (reqsRes.data?.length) {
           setTeacherRequests(reqsRes.data);
@@ -262,8 +294,46 @@ export default function App() {
     fetchInitialData();
   }, []);
 
-  // Real-Time WebSocket Subscriptions
+  // Real-Time WebSocket Subscriptions & Local Sync
   useEffect(() => {
+    const handleNewRequestEvent = (e) => {
+      if (e.detail) {
+        setTeacherRequests((prev) => [e.detail, ...prev.filter((r) => r.id !== e.detail.id)]);
+      }
+    };
+
+    const handleNewLogEvent = (e) => {
+      if (e.detail) {
+        setLogs((prev) => {
+          if (prev.some((item) => item.id === e.detail.id)) return prev;
+          const next = [e.detail, ...prev];
+          localStorage.setItem('sjc_cached_logs', JSON.stringify(next));
+          return next;
+        });
+      }
+    };
+
+    const handleStorageChange = (e) => {
+      if (e.key === 'sjc_teacher_requests' && e.newValue) {
+        try {
+          setTeacherRequests(JSON.parse(e.newValue));
+        } catch (err) {
+          console.error('Storage parse error:', err);
+        }
+      }
+      if (e.key === 'sjc_cached_logs' && e.newValue) {
+        try {
+          setLogs(JSON.parse(e.newValue));
+        } catch (err) {
+          console.error('Logs storage parse error:', err);
+        }
+      }
+    };
+
+    window.addEventListener('sjc_request_created', handleNewRequestEvent);
+    window.addEventListener('sjc_log_created', handleNewLogEvent);
+    window.addEventListener('storage', handleStorageChange);
+
     const channel = supabase
       .channel('schema-db-changes')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'rooms' }, (payload) => {
@@ -350,14 +420,29 @@ export default function App() {
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'logs' }, (payload) => {
         if (payload.eventType === 'INSERT' && payload.new) {
-          setLogs((prev) => [payload.new, ...prev.filter((log) => log.id !== payload.new.id)]);
+          setLogs((prev) => {
+            const isDuplicate = prev.some(
+              (item) => item.id === payload.new.id || (item.text === payload.new.text && item.time === payload.new.time)
+            );
+            if (isDuplicate) return prev;
+            const next = [payload.new, ...prev];
+            localStorage.setItem('sjc_cached_logs', JSON.stringify(next));
+            return next;
+          });
         } else if (payload.eventType === 'DELETE' && payload.old) {
-          setLogs((prev) => prev.filter((log) => log.id !== payload.old.id));
+          setLogs((prev) => {
+            const next = prev.filter((log) => log.id !== payload.old.id);
+            localStorage.setItem('sjc_cached_logs', JSON.stringify(next));
+            return next;
+          });
         }
       })
       .subscribe();
 
     return () => {
+      window.removeEventListener('sjc_request_created', handleNewRequestEvent);
+      window.removeEventListener('sjc_log_created', handleNewLogEvent);
+      window.removeEventListener('storage', handleStorageChange);
       supabase.removeChannel(channel);
     };
   }, []);
@@ -494,8 +579,10 @@ export default function App() {
 
   return (
     <div 
-      className={`min-h-screen bg-[#f8fafc] text-slate-800 flex flex-col relative overflow-x-hidden font-sans transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] ${
-        isWide ? 'w-full' : 'w-full max-w-md mx-auto shadow-2xl'
+      className={`min-h-screen bg-[#f8fafc] text-slate-800 flex flex-col relative font-sans transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+        isWide 
+          ? 'w-full min-w-[1024px] overflow-x-auto' 
+          : 'w-full max-w-md mx-auto shadow-2xl overflow-x-hidden'
       }`}
     >
       
@@ -645,7 +732,7 @@ export default function App() {
                 <Supplies 
                   supplies={supplies} 
                   setSupplies={setSupplies} 
-                  user={user}
+                  user={user} 
                   isDesktopView={isWide}
                 />
               ) : (

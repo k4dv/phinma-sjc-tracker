@@ -95,6 +95,7 @@ export default function Dashboard({
   const getNoteStyle = (log) => {
     const text = (log.text || '').toLowerCase();
     const author = (log.author || '').toLowerCase();
+    const role = (log.role || '').toLowerCase();
 
     // Teacher Request / Faculty Alert -> Yellow / Amber
     if (author.includes('faculty') || text.includes('teacher request') || text.includes('faculty alert')) {
@@ -109,7 +110,7 @@ export default function Dashboard({
     }
 
     // Admin -> Blue
-    if (author.includes('admin') || author.includes('supervisor') || log.role === 'admin') {
+    if (role === 'admin' || author.includes('admin') || author.includes('supervisor')) {
       return {
         cardClass: 'bg-sky-50/70 border-sky-200',
         dotClass: 'bg-sky-500',
@@ -176,7 +177,9 @@ export default function Dashboard({
   };
 
   const promptDeleteNote = (log) => {
-    if (!isAdmin) return;
+    const canDelete = isAdmin || (user?.name && log.author === user.name);
+    if (!canDelete) return;
+
     setItemToDelete({
       type: 'log',
       id: log.id,
@@ -200,7 +203,17 @@ export default function Dashboard({
       }
     } else if (itemToDelete.type === 'log') {
       const logId = itemToDelete.id;
-      if (setLogs) setLogs((prev) => prev.filter((l) => l.id !== logId));
+      if (setLogs) {
+        setLogs((prev) => {
+          const next = prev.filter((l) => l.id !== logId);
+          try {
+            localStorage.setItem('sjc_cached_logs', JSON.stringify(next));
+          } catch (err) {
+            console.warn('Storage sync error:', err);
+          }
+          return next;
+        });
+      }
       try {
         await supabase.from('logs').delete().eq('id', logId);
       } catch (err) {
@@ -213,23 +226,48 @@ export default function Dashboard({
 
   const handlePostShiftNote = async (e) => {
     e.preventDefault();
-    if (!shiftNoteInput.trim() || isSubmittingNote) return;
+    const trimmedNote = shiftNoteInput.trim();
+    if (!trimmedNote || isSubmittingNote) return;
 
     setIsSubmittingNote(true);
     const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const authorRole = isAdmin ? 'admin' : (user?.role || 'staff');
+    const authorName = user?.name || (isAdmin ? 'Facilities Supervisor' : 'Staff');
+
     const newLogItem = {
       id: `log-${Date.now()}`,
+      created_at: new Date().toISOString(),
       time: now,
-      author: user?.name || (isAdmin ? 'Admin' : 'Staff'),
-      text: shiftNoteInput.trim(),
-      role: isAdmin ? 'admin' : 'staff'
+      author: authorName,
+      text: trimmedNote,
+      role: authorRole
     };
 
+    // 1. Instant optimistic local UI update for immediate response on both staff and admin
+    if (setLogs) {
+      setLogs((prev) => [newLogItem, ...prev]);
+    }
+
+    // 2. Dual-Sync: Save to localStorage and notify other active browser tabs
     try {
-      await supabase.from('logs').insert([newLogItem]);
-      setShiftNoteInput('');
+      const stored = JSON.parse(localStorage.getItem('sjc_cached_logs') || '[]');
+      const updated = [newLogItem, ...stored.filter((l) => l.id !== newLogItem.id)];
+      localStorage.setItem('sjc_cached_logs', JSON.stringify(updated));
+      window.dispatchEvent(new CustomEvent('sjc_log_created', { detail: newLogItem }));
+    } catch (localErr) {
+      console.warn('Local storage sync notice:', localErr);
+    }
+
+    setShiftNoteInput('');
+
+    // 3. Persist to Supabase Database
+    try {
+      const { error } = await supabase.from('logs').insert([newLogItem]);
+      if (error) {
+        console.warn('Database note insert notice, local sync preserved:', error.message);
+      }
     } catch (err) {
-      console.error('Failed to post shift note:', err);
+      console.error('Failed to post shift note to database:', err);
     } finally {
       setIsSubmittingNote(false);
     }
@@ -690,6 +728,7 @@ export default function Dashboard({
               {logs && logs.length > 0 ? (
                 logs.map((log) => {
                   const style = getNoteStyle(log);
+                  const canDeleteNote = isAdmin || (user?.name && log.author === user.name);
 
                   return (
                     <div
@@ -707,11 +746,11 @@ export default function Dashboard({
                         
                         <div className="flex items-center gap-2">
                           <span className="text-[10px] text-slate-400 font-mono flex items-center gap-1">
-                            <Clock className="w-3 h-3 text-slate-400" />
+                            <Clock className="w-3.5 h-3.5 text-slate-400" />
                             {log.time}
                           </span>
 
-                          {isAdmin && (
+                          {canDeleteNote && (
                             <button
                               type="button"
                               onClick={() => promptDeleteNote(log)}
