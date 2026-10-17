@@ -93,18 +93,15 @@ export default function App() {
       setCurtainWidth('mobile');
       setCurtainStage('dropping');
 
-      // Expand curtain across monitor while crest spins
       setTimeout(() => {
         setCurtainWidth('wide');
       }, 1000);
 
-      // Switch layout behind the full-screen curtain before sliding up
       setTimeout(() => {
         setIsDesktopView(true);
         localStorage.setItem('sjc_desktop_view', 'true');
       }, 2100);
 
-      // Reveal widescreen dashboard
       setTimeout(() => {
         navigate('/dashboard');
         window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
@@ -119,11 +116,9 @@ export default function App() {
       // ==========================================
       // SEQUENCE B: PC WIDESCREEN -> PHONE
       // ==========================================
-      // 1. Drop the curtain at full monitor width to completely cover the widescreen layout
       setCurtainWidth('wide');
       setCurtainStage('dropping');
 
-      // 2. WHILE SCREEN IS 100% COVERED: Switch layout to phone mode underneath
       setTimeout(() => {
         setIsDesktopView(false);
         localStorage.setItem('sjc_desktop_view', 'false');
@@ -131,12 +126,10 @@ export default function App() {
         window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
       }, 850);
 
-      // 3. Now that layout underneath is already a mobile card, smoothly shrink curtain inward
       setTimeout(() => {
         setCurtainWidth('mobile');
       }, 1100);
 
-      // 4. Slide up to reveal the mobile container cleanly
       setTimeout(() => {
         setCurtainStage('sliding_up');
       }, 2400);
@@ -245,7 +238,21 @@ export default function App() {
           const fallback = await supabase.from('supplies').select('*').order('id', { ascending: true });
           rawSupplies = fallback.data || [];
         }
-        if (rawSupplies?.length) setSupplies(rawSupplies);
+        if (rawSupplies?.length) {
+          setSupplies(rawSupplies);
+
+          const photoMap = {};
+          rawSupplies.forEach((s) => {
+            const img = s.image_url || s.image;
+            if (img) photoMap[s.id] = img;
+          });
+          if (Object.keys(photoMap).length > 0) {
+            try {
+              const cached = JSON.parse(localStorage.getItem('sjc_supply_photos') || '{}');
+              localStorage.setItem('sjc_supply_photos', JSON.stringify({ ...cached, ...photoMap }));
+            } catch (_) {}
+          }
+        }
 
         if (assignRes.data?.length) {
           const assignMap = {};
@@ -364,6 +371,29 @@ export default function App() {
             localStorage.setItem('sjc_cached_rooms', JSON.stringify(next));
             return next;
           });
+        }
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'supplies' }, (payload) => {
+        if (payload.eventType === 'UPDATE' && payload.new) {
+          const updated = payload.new;
+          const cloudImg = updated.image_url || updated.image;
+          if (cloudImg) {
+            try {
+              const cached = JSON.parse(localStorage.getItem('sjc_supply_photos') || '{}');
+              cached[updated.id] = cloudImg;
+              localStorage.setItem('sjc_supply_photos', JSON.stringify(cached));
+            } catch (_) {}
+          }
+          setSupplies((prev) =>
+            prev.map((s) => (s.id === updated.id ? { ...s, ...updated, quantity: Number(updated.quantity) } : s))
+          );
+        } else if (payload.eventType === 'INSERT' && payload.new) {
+          setSupplies((prev) => {
+            if (prev.some((s) => s.id === payload.new.id || s.name === payload.new.name)) return prev;
+            return [...prev, payload.new];
+          });
+        } else if (payload.eventType === 'DELETE' && payload.old) {
+          setSupplies((prev) => prev.filter((s) => s.id !== payload.old.id));
         }
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, async () => {
@@ -644,7 +674,7 @@ export default function App() {
         <Header 
           title={`Hi, ${user.name}`} 
           user={user} 
-          onLogout={handleLogout}
+          onLogout={handleLogout} 
         />
       )}
 
