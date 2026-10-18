@@ -5,7 +5,7 @@ import Navbar from './components/Navbar';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Rooms from './pages/Rooms';
-import Supplies from './pages/Supplies';
+import Supplies, { unpackSupplyItem } from './pages/Supplies';
 import Admin from './pages/Admin';
 import TeacherRequest from './pages/TeacherRequest';
 import Profile from './pages/Profile';
@@ -23,6 +23,13 @@ import {
   INITIAL_ASSIGNMENTS, 
   INITIAL_BROADCAST 
 } from './data/mockData';
+
+const isVisibleLog = (logItem) => {
+  if (!logItem) return false;
+  if (logItem.id === 'keep_table_structure') return false;
+  if (logItem.author === '__SJC_SUPPLY_META__') return false;
+  return true;
+};
 
 export default function App() {
   const location = useLocation();
@@ -87,9 +94,6 @@ export default function App() {
     }
 
     if (targetIsWide) {
-      // ==========================================
-      // SEQUENCE A: PHONE -> PC WIDESCREEN
-      // ==========================================
       setCurtainWidth('mobile');
       setCurtainStage('dropping');
 
@@ -113,9 +117,6 @@ export default function App() {
       }, 3600);
 
     } else {
-      // ==========================================
-      // SEQUENCE B: PC WIDESCREEN -> PHONE
-      // ==========================================
       setCurtainWidth('wide');
       setCurtainStage('dropping');
 
@@ -154,7 +155,7 @@ export default function App() {
   const [logs, setLogs] = useState(() => {
     try {
       const cached = localStorage.getItem('sjc_cached_logs');
-      return cached ? JSON.parse(cached) : INITIAL_LOGS;
+      return cached ? JSON.parse(cached).filter(isVisibleLog) : INITIAL_LOGS;
     } catch {
       return INITIAL_LOGS;
     }
@@ -203,7 +204,7 @@ export default function App() {
           api.getSupplies().catch(() => null),
           supabase.from('assignments').select('*'),
           supabase.from('broadcast').select('*').limit(1),
-          supabase.from('logs').select('*').order('created_at', { ascending: false }).limit(25),
+          supabase.from('logs').select('*').order('created_at', { ascending: false }).limit(30),
           supabase.from('teacher_requests').select('*').order('created_at', { ascending: false }).limit(25)
         ]);
 
@@ -239,17 +240,25 @@ export default function App() {
           rawSupplies = fallback.data || [];
         }
         if (rawSupplies?.length) {
-          setSupplies(rawSupplies);
+          const unpackedSupplies = rawSupplies.map(unpackSupplyItem);
+          setSupplies(unpackedSupplies);
 
           const photoMap = {};
-          rawSupplies.forEach((s) => {
-            const img = s.image_url || s.image;
-            if (img) photoMap[s.id] = img;
+          const stackMap = {};
+          unpackedSupplies.forEach((s) => {
+            if (s.image_url) photoMap[s.id] = s.image_url;
+            if (s.cloud_stack) stackMap[s.id] = s.cloud_stack;
           });
           if (Object.keys(photoMap).length > 0) {
             try {
               const cached = JSON.parse(localStorage.getItem('sjc_supply_photos') || '{}');
               localStorage.setItem('sjc_supply_photos', JSON.stringify({ ...cached, ...photoMap }));
+            } catch (_) {}
+          }
+          if (Object.keys(stackMap).length > 0) {
+            try {
+              const cached = JSON.parse(localStorage.getItem('sjc_supplies_usage_history') || '{}');
+              localStorage.setItem('sjc_supplies_usage_history', JSON.stringify({ ...cached, ...stackMap }));
             } catch (_) {}
           }
         }
@@ -285,8 +294,9 @@ export default function App() {
         }
 
         if (logsRes.data?.length) {
-          setLogs(logsRes.data);
-          localStorage.setItem('sjc_cached_logs', JSON.stringify(logsRes.data));
+          const visibleLogs = logsRes.data.filter(isVisibleLog);
+          setLogs(visibleLogs);
+          localStorage.setItem('sjc_cached_logs', JSON.stringify(visibleLogs));
         }
 
         if (reqsRes.data?.length) {
@@ -310,7 +320,7 @@ export default function App() {
     };
 
     const handleNewLogEvent = (e) => {
-      if (e.detail) {
+      if (e.detail && isVisibleLog(e.detail)) {
         setLogs((prev) => {
           if (prev.some((item) => item.id === e.detail.id)) return prev;
           const next = [e.detail, ...prev];
@@ -330,7 +340,7 @@ export default function App() {
       }
       if (e.key === 'sjc_cached_logs' && e.newValue) {
         try {
-          setLogs(JSON.parse(e.newValue));
+          setLogs(JSON.parse(e.newValue).filter(isVisibleLog));
         } catch (err) {
           console.error('Logs storage parse error:', err);
         }
@@ -375,22 +385,29 @@ export default function App() {
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'supplies' }, (payload) => {
         if (payload.eventType === 'UPDATE' && payload.new) {
-          const updated = payload.new;
-          const cloudImg = updated.image_url || updated.image;
-          if (cloudImg) {
+          const unpacked = unpackSupplyItem(payload.new);
+          if (unpacked.image_url) {
             try {
               const cached = JSON.parse(localStorage.getItem('sjc_supply_photos') || '{}');
-              cached[updated.id] = cloudImg;
+              cached[unpacked.id] = unpacked.image_url;
               localStorage.setItem('sjc_supply_photos', JSON.stringify(cached));
             } catch (_) {}
           }
+          if (unpacked.cloud_stack) {
+            try {
+              const cached = JSON.parse(localStorage.getItem('sjc_supplies_usage_history') || '{}');
+              cached[unpacked.id] = unpacked.cloud_stack;
+              localStorage.setItem('sjc_supplies_usage_history', JSON.stringify(cached));
+            } catch (_) {}
+          }
           setSupplies((prev) =>
-            prev.map((s) => (s.id === updated.id ? { ...s, ...updated, quantity: Number(updated.quantity) } : s))
+            prev.map((s) => (s.id === unpacked.id ? { ...s, ...unpacked, quantity: Number(unpacked.quantity) } : s))
           );
         } else if (payload.eventType === 'INSERT' && payload.new) {
+          const unpacked = unpackSupplyItem(payload.new);
           setSupplies((prev) => {
-            if (prev.some((s) => s.id === payload.new.id || s.name === payload.new.name)) return prev;
-            return [...prev, payload.new];
+            if (prev.some((s) => s.id === unpacked.id || s.name === unpacked.name)) return prev;
+            return [...prev, unpacked];
           });
         } else if (payload.eventType === 'DELETE' && payload.old) {
           setSupplies((prev) => prev.filter((s) => s.id !== payload.old.id));
@@ -450,6 +467,7 @@ export default function App() {
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'logs' }, (payload) => {
         if (payload.eventType === 'INSERT' && payload.new) {
+          if (!isVisibleLog(payload.new)) return;
           setLogs((prev) => {
             const isDuplicate = prev.some(
               (item) => item.id === payload.new.id || (item.text === payload.new.text && item.time === payload.new.time)

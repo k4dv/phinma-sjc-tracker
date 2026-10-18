@@ -82,7 +82,7 @@ export default function Profile({
           .from('profiles')
           .select('avatar')
           .eq('id', String(user.id))
-          .single();
+          .maybeSingle();
 
         if (data?.avatar) {
           setAvatar(data.avatar);
@@ -102,7 +102,7 @@ export default function Profile({
         const img = new Image();
         img.onload = () => {
           const canvas = document.createElement('canvas');
-          const MAX_DIM = 256;
+          const MAX_DIM = 220;
           let width = img.width;
           let height = img.height;
 
@@ -123,7 +123,7 @@ export default function Profile({
           const ctx = canvas.getContext('2d');
           ctx.drawImage(img, 0, 0, width, height);
 
-          const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+          const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.82);
           resolve(compressedDataUrl);
         };
         img.onerror = reject;
@@ -145,16 +145,28 @@ export default function Profile({
       localStorage.setItem(storageKey, compressedBase64);
 
       if (user?.id) {
-        await supabase
+        // Direct update on existing `avatar` column without non-existent `updated_at`
+        const { data: updatedRows, error: updateErr } = await supabase
           .from('profiles')
-          .upsert({ 
-            id: String(user.id), 
-            avatar: compressedBase64, 
-            updated_at: new Date().toISOString() 
-          });
+          .update({ avatar: compressedBase64 })
+          .eq('id', String(user.id))
+          .select();
+
+        if (updateErr || !updatedRows || updatedRows.length === 0) {
+          await supabase
+            .from('profiles')
+            .upsert({
+              id: String(user.id),
+              name: user.name || 'Staff Member',
+              email: `${String(user.id).toLowerCase()}@phinmaed.com`,
+              role: user.role || 'staff',
+              access_level: Number(user.access_level) || 1,
+              avatar: compressedBase64
+            });
+        }
       }
 
-      setSuccessMsg('Profile picture updated!');
+      setSuccessMsg('Profile picture updated and synced across devices!');
       setTimeout(() => setSuccessMsg(''), 3500);
     } catch {
       setErrorMsg('Failed to process image. Try another file.');
@@ -283,13 +295,12 @@ export default function Profile({
         }
       }
 
-      // 4. Update the 'password' column in public.profiles (NO non-existent password_hash column)
+      // 4. Update the 'password' column in public.profiles
       const { error: updateError } = await supabase
         .from('profiles')
         .update({ 
           password: cleanNew,
-          is_first_login: false,
-          updated_at: new Date().toISOString()
+          is_first_login: false
         })
         .eq('id', dbUser.id);
 

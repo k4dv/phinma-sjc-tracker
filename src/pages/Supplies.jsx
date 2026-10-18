@@ -31,7 +31,6 @@ const CATEGORIES = [
   'PPE'
 ];
 
-// Fallback staff roster for avatar display & demo requisition history
 const DEFAULT_STAFF_USERS = [
   { id: '001', name: 'Kuya Bert' },
   { id: '002', name: 'Ate Linda' },
@@ -40,14 +39,68 @@ const DEFAULT_STAFF_USERS = [
   { id: '005', name: 'Kuya Jomar' }
 ];
 
+const META_DELIMITER = '|||SJC_META|||';
+
+// Unpacks embedded cloud photo and Canva stack from unit string if present
+export const unpackSupplyItem = (row) => {
+  if (!row) return row;
+  const rawUnit = String(row.raw_unit || row.unit || 'pcs');
+  let cleanUnit = String(row.unit || 'pcs').split(META_DELIMITER)[0] || 'pcs';
+  let metaImg = row.image_url || row.image || '';
+  let metaStack = row.cloud_stack || null;
+
+  if (rawUnit.includes(META_DELIMITER)) {
+    const parts = rawUnit.split(META_DELIMITER);
+    cleanUnit = parts[0] || 'pcs';
+    try {
+      const parsed = JSON.parse(parts[1]);
+      if (parsed.img) metaImg = parsed.img;
+      if (Array.isArray(parsed.stack)) metaStack = parsed.stack;
+    } catch (_) {}
+  }
+
+  return {
+    ...row,
+    unit: cleanUnit,
+    raw_unit: rawUnit,
+    image_url: metaImg,
+    cloud_stack: metaStack
+  };
+};
+
+// Packs clean unit + cloud photo + Canva stack into a single database-compatible text string
+export const packSupplyUnit = (cleanUnit, img, stack) => {
+  const baseUnit = String(cleanUnit || 'pcs').split(META_DELIMITER)[0] || 'pcs';
+  if (!img && (!stack || stack.length === 0)) {
+    return baseUnit;
+  }
+  const payload = {};
+  if (img) payload.img = img;
+  if (Array.isArray(stack) && stack.length > 0) {
+    payload.stack = stack.slice(0, 5);
+  }
+  return `${baseUnit}${META_DELIMITER}${JSON.stringify(payload)}`;
+};
+
 export default function Supplies({ supplies = [], setSupplies, user, isDesktopView = false }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [toastMessage, setToastMessage] = useState('');
   const [toastType, setToastType] = useState('success');
   
-  // Enlarged modal state (Centers on screen)
+  // Enlarged 30% center screen modal state
   const [activeEnlargedItem, setActiveEnlargedItem] = useState(null);
+
+  // Add New Supply Item Modal State
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [newItemName, setNewItemName] = useState('');
+  const [newItemCategory, setNewItemCategory] = useState('Chemicals');
+  const [newItemQty, setNewItemQty] = useState('');
+  const [newItemUnit, setNewItemUnit] = useState('bottles');
+  const [newItemThreshold, setNewItemThreshold] = useState('5');
+  const [newItemPhoto, setNewItemPhoto] = useState('');
+  const [isAddingSupply, setIsAddingSupply] = useState(false);
+  const newItemFileInputRef = useRef(null);
 
   // Requisition deduction popup state
   const [deductModalItem, setDeductModalItem] = useState(null);
@@ -59,7 +112,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
   const [hoveredFullNameId, setHoveredFullNameId] = useState(null);
   const hoverTimerRef = useRef(null);
 
-  // Photo upload loading indicator & immune ref
+  // Photo upload loading indicator & ref
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const fileInputRef = useRef(null);
   const uploadTargetIdRef = useRef(null);
@@ -97,88 +150,137 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     setTimeout(() => setToastMessage(''), 3500);
   };
 
-  // 1. Fetch Real Staff Avatars and Supply Photos directly from Supabase Database on load
+  // Sync unpacked photos & stacks whenever supplies prop updates
   useEffect(() => {
-    const fetchCloudAvatarsAndImages = async () => {
+    if (!supplies || supplies.length === 0) return;
+
+    const newPhotos = {};
+    const newStacks = {};
+
+    supplies.forEach((raw) => {
+      const item = unpackSupplyItem(raw);
+      if (item.image_url) {
+        newPhotos[item.id] = item.image_url;
+      }
+      if (item.cloud_stack && item.cloud_stack.length > 0) {
+        newStacks[item.id] = item.cloud_stack;
+      }
+    });
+
+    if (Object.keys(newPhotos).length > 0) {
+      setSupplyPhotos((prev) => {
+        const next = { ...prev, ...newPhotos };
+        try {
+          localStorage.setItem('sjc_supply_photos', JSON.stringify(next));
+        } catch (_) {}
+        return next;
+      });
+    }
+
+    if (Object.keys(newStacks).length > 0) {
+      setUsageHistory((prev) => {
+        const next = { ...prev, ...newStacks };
+        try {
+          localStorage.setItem('sjc_supplies_usage_history', JSON.stringify(next));
+        } catch (_) {}
+        return next;
+      });
+    }
+  }, [supplies]);
+
+  // Fetch Real Staff Avatars and Fallback Metadata from Supabase on mount
+  useEffect(() => {
+    const fetchCloudData = async () => {
       try {
-        // A. Load actual profile avatars so the Canva stack syncs across all phones & computers
+        // 1. Fetch all staff avatars from `profiles`
         const { data: profileRows } = await supabase
           .from('profiles')
           .select('id, name, avatar');
 
         if (profileRows && profileRows.length > 0) {
           const avatarMap = {};
-          const photoMap = {};
-
           profileRows.forEach((p) => {
             if (p.avatar) {
-              if (String(p.id).startsWith('supply_img_')) {
-                const supplyId = String(p.id).replace('supply_img_', '');
-                photoMap[supplyId] = p.avatar;
-              } else {
-                avatarMap[String(p.id).toLowerCase()] = p.avatar;
-                if (p.name) avatarMap[String(p.name).toLowerCase()] = p.avatar;
-              }
+              avatarMap[String(p.id).toLowerCase()] = p.avatar;
+              avatarMap[String(p.id).replace(/^0+/, '').toLowerCase()] = p.avatar;
+              if (p.name) avatarMap[String(p.name).toLowerCase()] = p.avatar;
             }
           });
-
           setStaffAvatarsMap(avatarMap);
-
-          if (Object.keys(photoMap).length > 0) {
-            setSupplyPhotos((prev) => {
-              const merged = { ...prev, ...photoMap };
-              try {
-                localStorage.setItem('sjc_supply_photos', JSON.stringify(merged));
-              } catch (_) {}
-              return merged;
-            });
-          }
         }
 
-        // B. Load any images directly stored in supplies table columns
+        // 2. Fetch protected system sync row in `logs` (`id = 'keep_table_structure'`)
+        const { data: metaRows } = await supabase
+          .from('logs')
+          .select('*')
+          .eq('id', 'keep_table_structure')
+          .maybeSingle();
+
+        if (metaRows && metaRows.text) {
+          try {
+            const parsedMeta = JSON.parse(metaRows.text);
+            if (parsedMeta.photos) {
+              setSupplyPhotos((prev) => {
+                const next = { ...prev, ...parsedMeta.photos };
+                try {
+                  localStorage.setItem('sjc_supply_photos', JSON.stringify(next));
+                } catch (_) {}
+                return next;
+              });
+            }
+            if (parsedMeta.stacks) {
+              setUsageHistory((prev) => {
+                const next = { ...prev, ...parsedMeta.stacks };
+                try {
+                  localStorage.setItem('sjc_supplies_usage_history', JSON.stringify(next));
+                } catch (_) {}
+                return next;
+              });
+            }
+          } catch (_) {}
+        }
+
+        // 3. Also fetch latest `supplies` rows directly to ensure fresh unpack
         const { data: supplyRows } = await supabase
           .from('supplies')
-          .select('*');
+          .select('*')
+          .order('id', { ascending: true });
 
         if (supplyRows && supplyRows.length > 0) {
-          const directMap = {};
-          supplyRows.forEach((s) => {
-            const img = s.image_url || s.image;
-            if (img) directMap[s.id] = img;
-          });
-
-          if (Object.keys(directMap).length > 0) {
-            setSupplyPhotos((prev) => {
-              const merged = { ...prev, ...directMap };
-              try {
-                localStorage.setItem('sjc_supply_photos', JSON.stringify(merged));
-              } catch (_) {}
-              return merged;
-            });
-          }
+          const unpackedList = supplyRows.map(unpackSupplyItem);
+          if (setSupplies) setSupplies(unpackedList);
         }
       } catch (err) {
-        console.warn('Initial cloud image hydration notice:', err);
+        console.warn('Cloud sync initialization notice:', err);
       }
     };
 
-    fetchCloudAvatarsAndImages();
-  }, []);
+    fetchCloudData();
+  }, [setSupplies]);
 
-  // 2. Real-time WebSocket Listeners for instant multi-device photo updates
+  // Real-time WebSocket Subscription for Supplies, Profiles, and System Meta
   useEffect(() => {
     const channel = supabase
-      .channel('supplies-realtime-photos-channel')
+      .channel('supplies-live-multi-device-sync')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'supplies' }, (payload) => {
         if (payload.eventType === 'UPDATE' && payload.new) {
-          const updated = payload.new;
-          const cloudImg = updated.image_url || updated.image;
+          const unpacked = unpackSupplyItem(payload.new);
 
-          if (cloudImg) {
+          if (unpacked.image_url) {
             setSupplyPhotos((prev) => {
-              const next = { ...prev, [updated.id]: cloudImg };
+              const next = { ...prev, [unpacked.id]: unpacked.image_url };
               try {
                 localStorage.setItem('sjc_supply_photos', JSON.stringify(next));
+              } catch (_) {}
+              return next;
+            });
+          }
+
+          if (unpacked.cloud_stack) {
+            setUsageHistory((prev) => {
+              const next = { ...prev, [unpacked.id]: unpacked.cloud_stack };
+              try {
+                localStorage.setItem('sjc_supplies_usage_history', JSON.stringify(next));
               } catch (_) {}
               return next;
             });
@@ -186,85 +288,111 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
 
           if (setSupplies) {
             setSupplies((prev) =>
-              prev.map((s) => (s.id === updated.id ? { ...s, ...updated, quantity: Number(updated.quantity) } : s))
+              prev.map((s) => (s.id === unpacked.id ? { ...s, ...unpacked, quantity: Number(unpacked.quantity) } : s))
             );
           }
 
           setActiveEnlargedItem((prev) => {
-            if (prev && prev.id === updated.id) {
-              return { ...prev, ...updated, quantity: Number(updated.quantity) };
+            if (prev && prev.id === unpacked.id) {
+              return { ...prev, ...unpacked, quantity: Number(unpacked.quantity) };
             }
             return prev;
           });
+        } else if (payload.eventType === 'INSERT' && payload.new) {
+          const unpacked = unpackSupplyItem(payload.new);
+          if (unpacked.image_url) {
+            setSupplyPhotos((prev) => ({ ...prev, [unpacked.id]: unpacked.image_url }));
+          }
+          if (setSupplies) {
+            setSupplies((prev) => {
+              if (prev.some((s) => s.id === unpacked.id)) return prev;
+              return [...prev, unpacked];
+            });
+          }
+        } else if (payload.eventType === 'DELETE' && payload.old) {
+          if (setSupplies) {
+            setSupplies((prev) => prev.filter((s) => s.id !== payload.old.id));
+          }
+        }
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'logs' }, (payload) => {
+        if (payload.new && payload.new.id === 'keep_table_structure' && payload.new.text) {
+          try {
+            const parsedMeta = JSON.parse(payload.new.text);
+            if (parsedMeta.photos) {
+              setSupplyPhotos((prev) => {
+                const next = { ...prev, ...parsedMeta.photos };
+                try {
+                  localStorage.setItem('sjc_supply_photos', JSON.stringify(next));
+                } catch (_) {}
+                return next;
+              });
+            }
+            if (parsedMeta.stacks) {
+              setUsageHistory((prev) => {
+                const next = { ...prev, ...parsedMeta.stacks };
+                try {
+                  localStorage.setItem('sjc_supplies_usage_history', JSON.stringify(next));
+                } catch (_) {}
+                return next;
+              });
+            }
+          } catch (_) {}
         }
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, (payload) => {
-        if (payload.new && String(payload.new.id).startsWith('supply_img_')) {
-          const supplyId = String(payload.new.id).replace('supply_img_', '');
-          const img = payload.new.avatar;
-          if (img) {
-            setSupplyPhotos((prev) => {
-              const next = { ...prev, [supplyId]: img };
-              try {
-                localStorage.setItem('sjc_supply_photos', JSON.stringify(next));
-              } catch (_) {}
-              return next;
-            });
-          }
+        if (payload.new && payload.new.avatar) {
+          const p = payload.new;
+          setStaffAvatarsMap((prev) => ({
+            ...prev,
+            [String(p.id).toLowerCase()]: p.avatar,
+            [String(p.id).replace(/^0+/, '').toLowerCase()]: p.avatar,
+            ...(p.name ? { [String(p.name).toLowerCase()]: p.avatar } : {})
+          }));
         }
       })
       .subscribe();
 
-    const handlePhotoEvent = (e) => {
-      if (e.detail?.supplyId && e.detail?.photo) {
-        setSupplyPhotos((prev) => ({
-          ...prev,
-          [e.detail.supplyId]: e.detail.photo
-        }));
-      }
-    };
-    window.addEventListener('sjc_supply_photo_updated', handlePhotoEvent);
-
     return () => {
-      window.removeEventListener('sjc_supply_photo_updated', handlePhotoEvent);
       supabase.removeChannel(channel);
     };
   }, [setSupplies]);
 
-  // Helper to retrieve staff avatar from live database map with local fallback
+  // Helper to resolve staff avatar from live database map or local cache
   const getStaffAvatar = (staffId, staffName = '') => {
     const cleanId = String(staffId || '').toLowerCase();
+    const strippedId = cleanId.replace(/^0+/, '');
     const cleanName = String(staffName || '').toLowerCase();
 
     return (
       staffAvatarsMap[cleanId] ||
+      staffAvatarsMap[strippedId] ||
       staffAvatarsMap[cleanName] ||
       localStorage.getItem(`sjc_avatar_${staffId}`) ||
       ''
     );
   };
 
-  // Compress image down to ~22KB thumbnail for fast cloud transfer
-  const compressImage = (file) => {
+  // Compress image down to a sharp, lightweight ~12KB thumbnail for instant database sync
+  const compressImage = (file, maxDim = 180) => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = (e) => {
         const img = new Image();
         img.onload = () => {
           const canvas = document.createElement('canvas');
-          const MAX_DIM = 240;
           let width = img.width;
           let height = img.height;
 
           if (width > height) {
-            if (width > MAX_DIM) {
-              height = Math.round((height * MAX_DIM) / width);
-              width = MAX_DIM;
+            if (width > maxDim) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
             }
           } else {
-            if (height > MAX_DIM) {
-              width = Math.round((width * MAX_DIM) / height);
-              height = MAX_DIM;
+            if (height > maxDim) {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
             }
           }
 
@@ -273,7 +401,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
           const ctx = canvas.getContext('2d');
           ctx.drawImage(img, 0, 0, width, height);
 
-          resolve(canvas.toDataURL('image/jpeg', 0.8));
+          resolve(canvas.toDataURL('image/jpeg', 0.76));
         };
         img.onerror = reject;
         img.src = e.target.result;
@@ -281,6 +409,52 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
       reader.onerror = reject;
       reader.readAsDataURL(file);
     });
+  };
+
+  // Helper to persist photos & stacks to BOTH `supplies.unit` AND `logs` (`keep_table_structure`)
+  const syncMetadataToCloud = async (targetSupplyId, nextPhotosMap, nextStacksMap, updatedQuantity = null) => {
+    const targetItem = supplies.find((s) => s.id === targetSupplyId);
+    const cleanUnit = targetItem ? String(targetItem.unit || 'pcs').split(META_DELIMITER)[0] : 'pcs';
+    const itemImg = nextPhotosMap[targetSupplyId] || targetItem?.image_url || '';
+    const itemStack = nextStacksMap[targetSupplyId] || [];
+
+    const packedUnitString = packSupplyUnit(cleanUnit, itemImg, itemStack);
+    const updatePayload = { unit: packedUnitString };
+    if (updatedQuantity !== null) {
+      updatePayload.quantity = Number(updatedQuantity);
+    }
+
+    // 1. Primary Sync: Update `supplies` row directly (Guaranteed table & permissions)
+    const { error: supplyErr } = await supabase
+      .from('supplies')
+      .update(updatePayload)
+      .eq('id', targetSupplyId);
+
+    if (supplyErr && updatedQuantity !== null) {
+      // If `unit` had any length constraint, still ensure `quantity` updates
+      await supabase
+        .from('supplies')
+        .update({ quantity: Number(updatedQuantity) })
+        .eq('id', targetSupplyId);
+    }
+
+    // 2. Secondary Mirror: Save master dictionary in `logs` (`id = 'keep_table_structure'`)
+    // Uses ONLY the 4 verified columns of `logs`: `id, time, author, text`
+    try {
+      const masterPayload = JSON.stringify({
+        photos: nextPhotosMap,
+        stacks: nextStacksMap
+      });
+      await supabase.from('logs').delete().eq('id', 'keep_table_structure');
+      await supabase.from('logs').insert([{
+        id: 'keep_table_structure',
+        time: 'SYNC',
+        author: '__SJC_SUPPLY_META__',
+        text: masterPayload
+      }]);
+    } catch (mirrorErr) {
+      console.warn('Secondary mirror sync notice:', mirrorErr);
+    }
   };
 
   // Handle uploading item photo and storing permanently in database
@@ -292,19 +466,18 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     setIsUploadingPhoto(true);
 
     try {
-      const compressedBase64 = await compressImage(file);
+      const compressedBase64 = await compressImage(file, 180);
 
-      // 1. Update local cache immediately
-      const updatedPhotos = {
+      // 1. Update local state & cache immediately
+      const nextPhotosMap = {
         ...supplyPhotos,
         [targetId]: compressedBase64
       };
-      setSupplyPhotos(updatedPhotos);
+      setSupplyPhotos(nextPhotosMap);
       try {
-        localStorage.setItem('sjc_supply_photos', JSON.stringify(updatedPhotos));
+        localStorage.setItem('sjc_supply_photos', JSON.stringify(nextPhotosMap));
       } catch (_) {}
 
-      // 2. Optimistic UI update on current screen
       if (setSupplies) {
         setSupplies((prev) =>
           prev.map((s) => (s.id === targetId ? { ...s, image_url: compressedBase64 } : s))
@@ -314,58 +487,86 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
         setActiveEnlargedItem((prev) => ({ ...prev, image_url: compressedBase64 }));
       }
 
-      // 3. PERSIST DIRECTLY TO SUPABASE DATABASE
-      // Method A: Update supplies table directly (tries image_url, then image column)
-      let savedToSupplies = false;
-      try {
-        const resA = await supabase
-          .from('supplies')
-          .update({ image_url: compressedBase64 })
-          .eq('id', targetId)
-          .select();
+      // 2. Sync to Supabase Database (`supplies` row + `keep_table_structure` mirror)
+      await syncMetadataToCloud(targetId, nextPhotosMap, usageHistory, null);
 
-        if (!resA.error && resA.data?.length) {
-          savedToSupplies = true;
-        } else {
-          const resB = await supabase
-            .from('supplies')
-            .update({ image: compressedBase64 })
-            .eq('id', targetId)
-            .select();
-          if (!resB.error && resB.data?.length) {
-            savedToSupplies = true;
-          }
-        }
-      } catch (_) {}
-
-      // Method B: Guaranteed Cloud Asset Mirror in `profiles` table
-      // (Uses the existing `avatar TEXT` column that is guaranteed to exist and sync)
-      try {
-        await supabase
-          .from('profiles')
-          .upsert({
-            id: `supply_img_${targetId}`,
-            avatar: compressedBase64,
-            name: `Supply Photo #${targetId}`,
-            role: 'system_asset'
-          });
-      } catch (assetErr) {
-        console.warn('Profiles asset mirror notice:', assetErr);
-      }
-
-      showToast('Photo saved to cloud! Now visible on all devices.', 'success');
-
-      // 4. Broadcast window event for multi-tab sync
-      window.dispatchEvent(new CustomEvent('sjc_supply_photo_updated', {
-        detail: { supplyId: targetId, photo: compressedBase64 }
-      }));
+      showToast('Item photo saved and synced to all devices!', 'success');
     } catch (err) {
       console.error('Upload processing error:', err);
-      showToast('Failed to upload image.', 'error');
+      showToast('Failed to process image.', 'error');
     } finally {
       setIsUploadingPhoto(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
       uploadTargetIdRef.current = null;
+    }
+  };
+
+  // Handle photo selection inside the "Add Item" Modal
+  const handleNewItemPhotoSelect = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const compressed = await compressImage(file, 180);
+      setNewItemPhoto(compressed);
+    } catch (_) {
+      showToast('Could not process selected photo.', 'error');
+    }
+  };
+
+  // Handle creating a new supply item from the Add Item Modal
+  const handleAddSupplyItem = async (e) => {
+    e.preventDefault();
+    if (!newItemName.trim()) return;
+
+    setIsAddingSupply(true);
+    const cleanUnit = newItemUnit.trim() || 'pcs';
+    const packedUnit = packSupplyUnit(cleanUnit, newItemPhoto, []);
+
+    const newSupplyObj = {
+      name: newItemName.trim(),
+      category: newItemCategory,
+      quantity: parseInt(newItemQty, 10) || 0,
+      unit: packedUnit,
+      threshold: parseInt(newItemThreshold, 10) || 1
+    };
+
+    try {
+      const { data, error } = await supabase
+        .from('supplies')
+        .insert([newSupplyObj])
+        .select();
+
+      if (error) throw error;
+
+      if (data && data[0]) {
+        const createdUnpacked = unpackSupplyItem(data[0]);
+        if (newItemPhoto) {
+          createdUnpacked.image_url = newItemPhoto;
+          const nextPhotos = { ...supplyPhotos, [createdUnpacked.id]: newItemPhoto };
+          setSupplyPhotos(nextPhotos);
+          try {
+            localStorage.setItem('sjc_supply_photos', JSON.stringify(nextPhotos));
+          } catch (_) {}
+          await syncMetadataToCloud(createdUnpacked.id, nextPhotos, usageHistory, null);
+        }
+
+        if (setSupplies) {
+          setSupplies((prev) => [...prev, createdUnpacked]);
+        }
+      }
+
+      setNewItemName('');
+      setNewItemQty('');
+      setNewItemUnit('bottles');
+      setNewItemThreshold('5');
+      setNewItemPhoto('');
+      setShowAddModal(false);
+      showToast(`Added "${newSupplyObj.name}" to inventory!`, 'success');
+    } catch (err) {
+      console.error('Failed to add supply item:', err);
+      showToast('Could not save supply item to database.', 'error');
+    } finally {
+      setIsAddingSupply(false);
     }
   };
 
@@ -376,7 +577,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     fileInputRef.current?.click();
   };
 
-  // Hover timer triggers full name display after 2-3 seconds
+  // Hover timer triggers full name display after 2 seconds
   const handleMouseEnterItem = (itemId) => {
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
     hoverTimerRef.current = setTimeout(() => {
@@ -404,7 +605,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     setDeductError('');
   };
 
-  // Execute the Requisition Deduction and sync to database
+  // Execute the Requisition Deduction and sync both stock & Canva stack to database
   const handleConfirmDeduction = async (e) => {
     e.preventDefault();
     if (!deductModalItem) return;
@@ -424,32 +625,22 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     const updatedQty = deductModalItem.quantity - count;
     const supplyId = deductModalItem.id;
 
-    // 1. Optimistic State Update
-    if (setSupplies) {
-      setSupplies((prev) =>
-        prev.map((s) => (s.id === supplyId ? { ...s, quantity: updatedQty } : s))
-      );
-    }
-
-    if (activeEnlargedItem?.id === supplyId) {
-      setActiveEnlargedItem((prev) => ({ ...prev, quantity: updatedQty }));
-    }
-
-    // 2. Canva-Style Stack Log Entry
+    // 1. Build Canva-Style Stack Log Entry with user's synced avatar
     const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const currentUserName = user?.name || (isAdmin ? 'Facilities Supervisor' : 'Staff Member');
     const currentUserId = user?.id || '001';
+    const userAvatar = getStaffAvatar(currentUserId, currentUserName);
 
     const newRecord = {
       userId: currentUserId,
       userName: currentUserName,
-      avatar: getStaffAvatar(currentUserId, currentUserName),
+      avatar: userAvatar,
       time: now,
       amount: count
     };
 
-    const existingRecords = usageHistory[supplyId] || [];
-    const updatedItemHistory = [newRecord, ...existingRecords.slice(0, 8)];
+    const existingRecords = usageHistory[supplyId] || deductModalItem.cloud_stack || [];
+    const updatedItemHistory = [newRecord, ...existingRecords.slice(0, 4)];
     const nextFullHistory = {
       ...usageHistory,
       [supplyId]: updatedItemHistory
@@ -460,22 +651,40 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
       localStorage.setItem('sjc_supplies_usage_history', JSON.stringify(nextFullHistory));
     } catch (_) {}
 
-    // 3. Persist directly to Supabase Database (pushes live to all other devices)
+    // 2. Optimistic State Update
+    if (setSupplies) {
+      setSupplies((prev) =>
+        prev.map((s) =>
+          s.id === supplyId
+            ? { ...s, quantity: updatedQty, cloud_stack: updatedItemHistory }
+            : s
+        )
+      );
+    }
+
+    if (activeEnlargedItem?.id === supplyId) {
+      setActiveEnlargedItem((prev) => ({
+        ...prev,
+        quantity: updatedQty,
+        cloud_stack: updatedItemHistory
+      }));
+    }
+
+    // 3. Persist both new quantity AND Canva stack + photo to Supabase Database
     try {
-      await api.updateSupplyQty(supplyId, updatedQty);
-      
-      // Also write log record to Supabase handover feed
+      await syncMetadataToCloud(supplyId, supplyPhotos, nextFullHistory, updatedQty);
+
+      // Post handover log using only the 4 verified columns of `logs`
       supabase.from('logs').insert([{
         id: `log-${Date.now()}`,
         time: now,
         author: currentUserName,
-        text: `Requisition: ${count} ${deductModalItem.unit} of ${deductModalItem.name} checked out. Remaining: ${updatedQty}.`,
-        role: isAdmin ? 'admin' : 'staff'
+        text: `Checked out ${count} ${deductModalItem.unit} of ${deductModalItem.name}. Remaining: ${updatedQty} ${deductModalItem.unit}.`
       }]).catch(() => {});
 
       showToast(`Checked out ${count} ${deductModalItem.unit} of ${deductModalItem.name}!`, 'success');
     } catch (err) {
-      console.warn('Primary sync notice, applying direct update:', err);
+      console.warn('Primary sync notice, applying fallback update:', err);
       await supabase.from('supplies').update({ quantity: updatedQty }).eq('id', supplyId);
       showToast(`Stock updated to ${updatedQty} ${deductModalItem.unit}.`, 'success');
     } finally {
@@ -494,7 +703,6 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
 
     const updatedQty = target.quantity + 1;
 
-    // Optimistic UI
     if (setSupplies) {
       setSupplies((prev) =>
         prev.map((s) => (s.id === supplyId ? { ...s, quantity: updatedQty } : s))
@@ -505,9 +713,8 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
       setActiveEnlargedItem((prev) => ({ ...prev, quantity: updatedQty }));
     }
 
-    // Persist directly to database
     try {
-      await api.updateSupplyQty(supplyId, updatedQty);
+      await syncMetadataToCloud(supplyId, supplyPhotos, usageHistory, updatedQty);
     } catch {
       await supabase.from('supplies').update({ quantity: updatedQty }).eq('id', supplyId);
     }
@@ -537,14 +744,17 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
 
   const handleExportExcel = () => {
     try {
-      const rows = supplies.map((s) => ({
-        'Item Name': s.name,
-        Category: s.category || 'General',
-        Quantity: s.quantity,
-        Unit: s.unit,
-        Threshold: s.threshold,
-        'Stock Status': s.quantity <= s.threshold ? 'LOW STOCK' : 'STOCKED'
-      }));
+      const rows = supplies.map((raw) => {
+        const s = unpackSupplyItem(raw);
+        return {
+          'Item Name': s.name,
+          Category: s.category || 'General',
+          Quantity: s.quantity,
+          Unit: s.unit,
+          Threshold: s.threshold,
+          'Stock Status': s.quantity <= s.threshold ? 'LOW STOCK' : 'STOCKED'
+        };
+      });
 
       const wb = XLSX.utils.book_new();
       const ws = XLSX.utils.json_to_sheet(rows);
@@ -558,7 +768,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
   };
 
   const filteredSupplies = useMemo(() => {
-    return supplies.filter((item) => {
+    return supplies.map(unpackSupplyItem).filter((item) => {
       const matchesCategory = selectedCategory === 'All' || item.category === selectedCategory;
       const q = searchQuery.toLowerCase().trim();
       const matchesSearch = !q || item.name.toLowerCase().includes(q) || (item.category && item.category.toLowerCase().includes(q));
@@ -568,16 +778,17 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
 
   const lowStockItems = supplies.filter((s) => s.quantity <= s.threshold);
 
-  // Resolves Canva-style profile avatar stack for a given supply item using cloud avatars
-  const getItemUserStack = (supplyId) => {
-    const recorded = usageHistory[supplyId];
+  // Resolves Canva-style profile avatar stack for a given supply item using synced cloud data
+  const getItemUserStack = (item) => {
+    const supplyId = item?.id;
+    const recorded = usageHistory[supplyId] || item?.cloud_stack;
     if (recorded && recorded.length > 0) {
       return recorded.map((st) => ({
         ...st,
-        avatar: getStaffAvatar(st.userId, st.userName)
+        avatar: getStaffAvatar(st.userId, st.userName) || st.avatar || ''
       }));
     }
-    const hashNum = String(supplyId).charCodeAt(0) || 1;
+    const hashNum = String(supplyId || 1).charCodeAt(0) || 1;
     return DEFAULT_STAFF_USERS.slice(hashNum % 2, (hashNum % 2) + 3).map((st) => ({
       userId: st.id,
       userName: st.name,
@@ -590,12 +801,21 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
   return (
     <div className={`p-4 pt-3 space-y-3.5 pb-28 text-slate-800 ${isPcMode ? 'max-w-5xl mx-auto' : 'max-w-md mx-auto'}`}>
       
-      {/* Hidden File Input for Admin Image Uploads */}
+      {/* Hidden File Input for Card Image Uploads */}
       <input 
         type="file"
         ref={fileInputRef}
         accept="image/*"
         onChange={handlePhotoSelect}
+        className="hidden"
+      />
+
+      {/* Hidden File Input for New Item Modal Photo Upload */}
+      <input 
+        type="file"
+        ref={newItemFileInputRef}
+        accept="image/*"
+        onChange={handleNewItemPhotoSelect}
         className="hidden"
       />
 
@@ -642,7 +862,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
 
       {/* Toast Alert */}
       {toastMessage && typeof document !== 'undefined' && createPortal(
-        <div className="fixed top-20 inset-x-0 z-[150] max-w-sm mx-auto px-4 pointer-events-none animate-toast select-none">
+        <div className="fixed top-20 inset-x-0 z-[250] max-w-sm mx-auto px-4 pointer-events-none animate-toast select-none">
           <div className={`pointer-events-auto p-3.5 backdrop-blur-sm border text-xs font-semibold rounded-3xl flex items-center gap-2.5 shadow-xl ${
             toastType === 'error'
               ? 'bg-rose-50/95 border-rose-300 text-rose-800'
@@ -687,23 +907,36 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
         </div>
       </div>
 
-      {/* Search Input Bar */}
-      <div className="relative">
-        <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-        <input
-          type="text"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Search supplies, bond paper, equipment..."
-          className="w-full pl-9 pr-9 py-2.5 bg-white border border-slate-100 rounded-2xl text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#176e57] shadow-[0_2px_10px_rgba(0,0,0,0.02)] transition"
-        />
-        {searchQuery && (
+      {/* Search Input Bar + Add Item Button on the Right */}
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search supplies, bond paper, equipment..."
+            className="w-full pl-9 pr-9 py-2.5 bg-white border border-slate-100 rounded-2xl text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#176e57] shadow-[0_2px_10px_rgba(0,0,0,0.02)] transition"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded-full"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+
+        {isAdmin && (
           <button
             type="button"
-            onClick={() => setSearchQuery('')}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded-full"
+            onClick={() => setShowAddModal(true)}
+            className="flex items-center gap-1.5 px-3.5 py-2.5 bg-[#176e57] hover:bg-[#135c49] active:scale-95 text-white rounded-2xl text-xs font-bold transition shadow-xs flex-shrink-0"
           >
-            <X className="w-3.5 h-3.5" />
+            <Plus className="w-4 h-4 stroke-[2.5]" />
+            <span>Add Item</span>
           </button>
         )}
       </div>
@@ -744,8 +977,8 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
       >
         {filteredSupplies.map((item, index) => {
           const isLow = item.quantity <= item.threshold;
-          const itemImg = item.image_url || item.image || supplyPhotos[item.id];
-          const stackUsers = getItemUserStack(item.id);
+          const itemImg = supplyPhotos[item.id] || item.image_url || item.image;
+          const stackUsers = getItemUserStack(item);
 
           return (
             <div
@@ -758,41 +991,8 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                 !animationsDisabled ? 'anim-ios-notification' : ''
               } ${isLow ? 'border-rose-200 ring-1 ring-rose-200/70' : 'border-slate-100'}`}
             >
-              {/* Left Section: Photo Square & Item Details */}
+              {/* Left Section: Item Details & Canva Avatar Stack */}
               <div className="flex items-center gap-3.5 min-w-0 flex-1">
-                
-                {/* Photo Upload Rounded Square */}
-                <div 
-                  onClick={(e) => triggerUpload(e, item.id)}
-                  title={isAdmin ? "Upload item picture" : "Item photo"}
-                  className={`w-14 h-14 rounded-2xl border flex items-center justify-center overflow-hidden transition relative group/square flex-shrink-0 ${
-                    itemImg 
-                      ? 'border-emerald-300 bg-slate-900 shadow-2xs' 
-                      : 'border-slate-200 bg-slate-50 hover:border-[#176e57]'
-                  } ${isAdmin ? 'active:scale-90 cursor-pointer' : 'cursor-default'}`}
-                >
-                  {itemImg ? (
-                    <img 
-                      src={itemImg} 
-                      alt={item.name} 
-                      className="w-full h-full object-cover" 
-                    />
-                  ) : (
-                    <Package className="w-6 h-6 text-slate-400 group-hover/square:text-[#176e57] transition" />
-                  )}
-
-                  {isAdmin && (
-                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/square:opacity-100 flex items-center justify-center transition rounded-2xl">
-                      {isUploadingPhoto && uploadTargetIdRef.current === item.id ? (
-                        <Loader2 className="w-4 h-4 text-white animate-spin" />
-                      ) : (
-                        <Camera className="w-4 h-4 text-white" />
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                {/* Name, Category, & 2-3s Hover Full Name Trigger */}
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
                     <div 
@@ -800,7 +1000,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                       onMouseEnter={() => handleMouseEnterItem(item.id)}
                       onMouseLeave={handleMouseLeaveItem}
                     >
-                      <h3 className="font-extrabold text-slate-900 text-sm truncate max-w-[190px] sm:max-w-[260px] block" title={item.name}>
+                      <h3 className="font-extrabold text-slate-900 text-sm truncate max-w-[180px] sm:max-w-[240px] block" title={item.name}>
                         {item.name}
                       </h3>
 
@@ -849,7 +1049,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                               {pfp ? (
                                 <img src={pfp} alt={st.userName} className="w-full h-full object-cover" />
                               ) : (
-                                <span>{st.userName[0]}</span>
+                                <span>{st.userName?.[0] || 'S'}</span>
                               )}
                             </div>
                           );
@@ -865,50 +1065,85 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                       </span>
                     </div>
                   </div>
-                </div>
 
+                  {/* Stepper Controls Row */}
+                  <div className="flex items-center gap-2 mt-2.5">
+                    <div className="flex items-center gap-1.5 bg-slate-50/90 border border-slate-200/80 rounded-2xl p-1 shadow-2xs">
+                      <button
+                        type="button"
+                        onClick={(e) => handleOpenDeductModal(item, e)}
+                        title="Check out units"
+                        className="w-7 h-7 rounded-xl bg-white hover:bg-slate-100 active:scale-90 text-slate-700 border border-slate-200/60 shadow-2xs flex items-center justify-center transition"
+                      >
+                        <Minus className="w-3.5 h-3.5 stroke-[2.2]" />
+                      </button>
+
+                      <span className="font-mono font-bold text-xs px-1.5 min-w-[24px] text-center text-slate-800">
+                        {item.quantity}
+                      </span>
+
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          onClick={(e) => handleAdminAddStock(item.id, e)}
+                          title="Add 1 unit (Supervisor only)"
+                          className="w-7 h-7 rounded-xl bg-[#176e57] hover:bg-[#135c49] active:scale-90 text-white shadow-2xs flex items-center justify-center transition"
+                        >
+                          <Plus className="w-3.5 h-3.5 stroke-[2.2]" />
+                        </button>
+                      )}
+                    </div>
+
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        onClick={(e) => handleDeleteSupply(item.id, item.name, e)}
+                        className="text-slate-400 hover:text-rose-600 active:scale-90 transition p-1.5 hover:bg-rose-50 rounded-xl"
+                        title="Delete supply"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
               </div>
 
-              {/* Right Section: Quantity Controls & Admin Add */}
-              <div className="flex items-center gap-2 flex-shrink-0">
-                <div className="flex items-center gap-1.5 bg-slate-50/90 border border-slate-200/80 rounded-2xl p-1 shadow-2xs">
-                  {/* Minus button triggers Requisition Quantity Popup */}
-                  <button
-                    type="button"
-                    onClick={(e) => handleOpenDeductModal(item, e)}
-                    title="Check out units"
-                    className="w-8 h-8 rounded-xl bg-white hover:bg-slate-100 active:scale-90 text-slate-700 border border-slate-200/60 shadow-2xs flex items-center justify-center transition"
-                  >
-                    <Minus className="w-3.5 h-3.5 stroke-[2.2]" />
-                  </button>
+              {/* Top-Right Rounded Square Picture Slot */}
+              <div className="flex flex-col items-end justify-between self-stretch flex-shrink-0">
+                <div 
+                  onClick={(e) => triggerUpload(e, item.id)}
+                  title={isAdmin ? "Tap to upload/change item picture" : "Item photo"}
+                  className={`w-16 h-16 rounded-2xl border-2 flex items-center justify-center overflow-hidden transition relative group/square flex-shrink-0 ${
+                    itemImg 
+                      ? 'border-emerald-400/70 bg-slate-900 shadow-xs' 
+                      : 'border-dashed border-slate-200 bg-slate-50 hover:border-[#176e57]'
+                  } ${isAdmin ? 'active:scale-90 cursor-pointer' : 'cursor-default'}`}
+                >
+                  {itemImg ? (
+                    <img 
+                      src={itemImg} 
+                      alt={item.name} 
+                      className="w-full h-full object-cover" 
+                    />
+                  ) : (
+                    <div className="flex flex-col items-center justify-center text-slate-400 group-hover/square:text-[#176e57] transition">
+                      <Camera className="w-5 h-5" />
+                      <span className="text-[8px] font-bold uppercase mt-0.5">
+                        {isAdmin ? 'Photo' : 'Item'}
+                      </span>
+                    </div>
+                  )}
 
-                  <span className="font-mono font-bold text-xs px-1.5 min-w-[26px] text-center text-slate-800">
-                    {item.quantity}
-                  </span>
-
-                  {/* Plus button is strictly reserved for Admin */}
                   {isAdmin && (
-                    <button
-                      type="button"
-                      onClick={(e) => handleAdminAddStock(item.id, e)}
-                      title="Add 1 unit (Supervisor only)"
-                      className="w-8 h-8 rounded-xl bg-[#176e57] hover:bg-[#135c49] active:scale-90 text-white shadow-2xs flex items-center justify-center transition"
-                    >
-                      <Plus className="w-3.5 h-3.5 stroke-[2.2]" />
-                    </button>
+                    <div className="absolute inset-0 bg-black/45 opacity-0 group-hover/square:opacity-100 flex items-center justify-center transition rounded-2xl">
+                      {isUploadingPhoto && uploadTargetIdRef.current === item.id ? (
+                        <Loader2 className="w-4 h-4 text-white animate-spin" />
+                      ) : (
+                        <Camera className="w-4 h-4 text-white" />
+                      )}
+                    </div>
                   )}
                 </div>
-
-                {isAdmin && (
-                  <button
-                    type="button"
-                    onClick={(e) => handleDeleteSupply(item.id, item.name, e)}
-                    className="text-slate-400 hover:text-rose-600 active:scale-90 transition p-1.5 hover:bg-rose-50 rounded-xl"
-                    title="Delete supply"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                )}
               </div>
             </div>
           );
@@ -924,6 +1159,165 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
       )}
 
       {/* ============================================================== */}
+      {/* ➕ ADD NEW SUPPLY ITEM MODAL                                    */}
+      {/* ============================================================== */}
+      {showAddModal && typeof document !== 'undefined' && createPortal(
+        <div 
+          className="fixed inset-0 z-[220] bg-black/65 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-backdrop select-none"
+          onClick={() => setShowAddModal(false)}
+        >
+          <div 
+            className="bg-white w-full max-w-sm rounded-3xl p-5 shadow-2xl border border-slate-100 space-y-4 animate-sheet-up overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-emerald-50 text-[#176e57] rounded-xl">
+                  <Package className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800">
+                    Add New Supply Item
+                  </h3>
+                  <p className="text-[10px] text-slate-400">
+                    Register item to central campus storage
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAddModal(false)}
+                className="p-1 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleAddSupplyItem} className="space-y-3 text-xs">
+              {/* Top Row: Item Name + Top-Right Photo Upload Square */}
+              <div className="flex items-start gap-3">
+                <div className="flex-1">
+                  <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                    Item Name:
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={newItemName}
+                    onChange={(e) => setNewItemName(e.target.value)}
+                    placeholder="e.g. Mop Heads, Disinfectant"
+                    className="w-full p-2.5 border border-slate-200 rounded-2xl bg-slate-50 focus:outline-none focus:border-[#176e57]"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-bold text-slate-700 block mb-1 text-center">
+                    Photo:
+                  </label>
+                  <div
+                    onClick={() => newItemFileInputRef.current?.click()}
+                    title="Upload item photo"
+                    className="w-11 h-11 rounded-2xl border-2 border-dashed border-slate-300 hover:border-[#176e57] bg-slate-50 flex items-center justify-center cursor-pointer overflow-hidden transition active:scale-95"
+                  >
+                    {newItemPhoto ? (
+                      <img src={newItemPhoto} alt="Preview" className="w-full h-full object-cover" />
+                    ) : (
+                      <Camera className="w-4 h-4 text-slate-400" />
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                    Category:
+                  </label>
+                  <select
+                    value={newItemCategory}
+                    onChange={(e) => setNewItemCategory(e.target.value)}
+                    className="w-full p-2.5 border border-slate-200 rounded-2xl bg-slate-50 font-semibold focus:outline-none focus:border-[#176e57]"
+                  >
+                    <option value="Paper & Printing">Paper & Printing</option>
+                    <option value="Chemicals">Chemicals</option>
+                    <option value="Equipment">Equipment</option>
+                    <option value="Disposables">Disposables</option>
+                    <option value="Hygiene">Hygiene</option>
+                    <option value="PPE">PPE</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                    Unit Type:
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={newItemUnit}
+                    onChange={(e) => setNewItemUnit(e.target.value)}
+                    placeholder="pcs, bottles, rolls"
+                    className="w-full p-2.5 border border-slate-200 rounded-2xl bg-slate-50 focus:outline-none focus:border-[#176e57]"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                    Initial Quantity:
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    required
+                    value={newItemQty}
+                    onChange={(e) => setNewItemQty(e.target.value)}
+                    placeholder="10"
+                    className="w-full p-2.5 border border-slate-200 rounded-2xl bg-slate-50 focus:outline-none focus:border-[#176e57]"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                    Low Stock Alert:
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    required
+                    value={newItemThreshold}
+                    onChange={(e) => setNewItemThreshold(e.target.value)}
+                    placeholder="5"
+                    className="w-full p-2.5 border border-slate-200 rounded-2xl bg-slate-50 focus:outline-none focus:border-[#176e57]"
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAddModal(false)}
+                  className="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-700 font-bold rounded-2xl text-xs transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isAddingSupply || !newItemName.trim()}
+                  className="flex-1 py-2.5 bg-[#176e57] hover:bg-[#135c49] active:scale-95 text-white font-bold rounded-2xl transition shadow-xs flex items-center justify-center gap-1.5 disabled:opacity-60"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>{isAddingSupply ? 'Saving...' : 'Add to Storage'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* ============================================================== */}
       {/* 🌟 ENLARGED 30% SCREEN CENTER CARD MODAL                        */}
       {/* ============================================================== */}
       {activeEnlargedItem && typeof document !== 'undefined' && createPortal(
@@ -935,60 +1329,63 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
             className="bg-white w-full max-w-md rounded-3xl p-5 shadow-2xl border border-slate-100 space-y-4 animate-pop overflow-hidden relative"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Modal Header */}
-            <div className="flex items-start justify-between border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-3">
-                {/* Large Rounded Photo Square */}
+            {/* Modal Header with Top-Right Rounded Square Photo Slot */}
+            <div className="flex items-start justify-between border-b border-slate-100 pb-3.5 gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 uppercase tracking-wider">
+                    {activeEnlargedItem.category || 'General'}
+                  </span>
+                  {activeEnlargedItem.quantity <= activeEnlargedItem.threshold && (
+                    <span className="text-[10px] font-bold text-rose-700 bg-rose-50 px-2 py-0.5 rounded-full border border-rose-200 flex items-center gap-1">
+                      <AlertCircle className="w-3 h-3 text-rose-600" /> Restock Alert
+                    </span>
+                  )}
+                </div>
+                <h3 className="text-base font-extrabold text-slate-900 mt-1.5 leading-snug break-words">
+                  {activeEnlargedItem.name}
+                </h3>
+              </div>
+
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {/* Top-Right Rounded Photo Square inside Enlarged Modal */}
                 <div 
                   onClick={(e) => triggerUpload(e, activeEnlargedItem.id)}
-                  title={isAdmin ? "Upload item photo" : "Item picture"}
-                  className={`w-14 h-14 rounded-2xl border flex items-center justify-center overflow-hidden transition relative group/modal-square ${
-                    activeEnlargedItem.image_url || activeEnlargedItem.image || supplyPhotos[activeEnlargedItem.id]
-                      ? 'border-emerald-300 bg-slate-900 shadow-md'
-                      : 'border-slate-200 bg-slate-50 hover:border-[#176e57]'
+                  title={isAdmin ? "Tap to upload/change item photo" : "Item picture"}
+                  className={`w-16 h-16 rounded-2xl border-2 flex items-center justify-center overflow-hidden transition relative group/modal-square ${
+                    supplyPhotos[activeEnlargedItem.id] || activeEnlargedItem.image_url || activeEnlargedItem.image
+                      ? 'border-emerald-400 bg-slate-900 shadow-md'
+                      : 'border-dashed border-slate-200 bg-slate-50 hover:border-[#176e57]'
                   } ${isAdmin ? 'cursor-pointer active:scale-95' : 'cursor-default'}`}
                 >
-                  {activeEnlargedItem.image_url || activeEnlargedItem.image || supplyPhotos[activeEnlargedItem.id] ? (
+                  {supplyPhotos[activeEnlargedItem.id] || activeEnlargedItem.image_url || activeEnlargedItem.image ? (
                     <img 
-                      src={activeEnlargedItem.image_url || activeEnlargedItem.image || supplyPhotos[activeEnlargedItem.id]} 
+                      src={supplyPhotos[activeEnlargedItem.id] || activeEnlargedItem.image_url || activeEnlargedItem.image} 
                       alt={activeEnlargedItem.name} 
                       className="w-full h-full object-cover" 
                     />
                   ) : (
-                    <Package className="w-7 h-7 text-slate-400" />
+                    <div className="flex flex-col items-center justify-center text-slate-400">
+                      <Camera className="w-5 h-5" />
+                      <span className="text-[8px] font-bold uppercase mt-0.5">Photo</span>
+                    </div>
                   )}
 
                   {isAdmin && (
-                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/modal-square:opacity-100 flex items-center justify-center transition rounded-2xl">
+                    <div className="absolute inset-0 bg-black/45 opacity-0 group-hover/modal-square:opacity-100 flex items-center justify-center transition rounded-2xl">
                       <Camera className="w-4 h-4 text-white" />
                     </div>
                   )}
                 </div>
 
-                <div>
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 uppercase tracking-wider">
-                      {activeEnlargedItem.category || 'General'}
-                    </span>
-                    {activeEnlargedItem.quantity <= activeEnlargedItem.threshold && (
-                      <span className="text-[10px] font-bold text-rose-700 bg-rose-50 px-2 py-0.5 rounded-full border border-rose-200 flex items-center gap-1">
-                        <AlertCircle className="w-3 h-3 text-rose-600" /> Restock Alert
-                      </span>
-                    )}
-                  </div>
-                  <h3 className="text-base font-extrabold text-slate-900 mt-1 leading-tight">
-                    {activeEnlargedItem.name}
-                  </h3>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveEnlargedItem(null)}
+                  className="p-1.5 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition self-start"
+                >
+                  <X className="w-5 h-5" />
+                </button>
               </div>
-
-              <button
-                type="button"
-                onClick={() => setActiveEnlargedItem(null)}
-                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition"
-              >
-                <X className="w-5 h-5" />
-              </button>
             </div>
 
             {/* Quick Stats & Stock Health Gauge */}
@@ -1041,7 +1438,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
               <div className="p-3 bg-white border border-slate-200/80 rounded-2xl space-y-2 shadow-2xs">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center -space-x-2">
-                    {getItemUserStack(activeEnlargedItem.id).map((st, idx) => {
+                    {getItemUserStack(activeEnlargedItem).map((st, idx) => {
                       const pfp = st.avatar || getStaffAvatar(st.userId, st.userName);
                       return (
                         <div
@@ -1052,7 +1449,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                           {pfp ? (
                             <img src={pfp} alt={st.userName} className="w-full h-full object-cover" />
                           ) : (
-                            <span>{st.userName[0]}</span>
+                            <span>{st.userName?.[0] || 'S'}</span>
                           )}
                         </div>
                       );
@@ -1060,26 +1457,36 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                   </div>
 
                   <span className="text-[10px] font-semibold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                    Active Handover
+                    Synced Handover
                   </span>
                 </div>
 
                 {/* Detailed Logs of Recent Requisitions */}
                 <div className="space-y-1.5 pt-1 border-t border-slate-100 max-h-36 overflow-y-auto pr-1">
-                  {getItemUserStack(activeEnlargedItem.id).map((log, lIdx) => (
-                    <div key={lIdx} className="flex items-center justify-between text-[11px] p-1.5 rounded-xl bg-slate-50/70">
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-slate-800">{log.userName}</span>
-                        <span className="text-[10px] text-slate-400 font-mono flex items-center gap-0.5">
-                          <Clock className="w-3 h-3 text-slate-400" />
-                          {log.time}
+                  {getItemUserStack(activeEnlargedItem).map((log, lIdx) => {
+                    const pfp = log.avatar || getStaffAvatar(log.userId, log.userName);
+                    return (
+                      <div key={lIdx} className="flex items-center justify-between text-[11px] p-1.5 rounded-xl bg-slate-50/70">
+                        <div className="flex items-center gap-2">
+                          <div className="w-5 h-5 rounded-full bg-[#176e57] text-white flex items-center justify-center font-bold text-[8px] overflow-hidden flex-shrink-0">
+                            {pfp ? (
+                              <img src={pfp} alt={log.userName} className="w-full h-full object-cover" />
+                            ) : (
+                              <span>{log.userName?.[0] || 'S'}</span>
+                            )}
+                          </div>
+                          <span className="font-bold text-slate-800">{log.userName}</span>
+                          <span className="text-[10px] text-slate-400 font-mono flex items-center gap-0.5">
+                            <Clock className="w-3 h-3 text-slate-400" />
+                            {log.time}
+                          </span>
+                        </div>
+                        <span className="text-[10px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200">
+                          -{log.amount} {activeEnlargedItem.unit}
                         </span>
                       </div>
-                      <span className="text-[10px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200">
-                        -{log.amount} {activeEnlargedItem.unit}
-                      </span>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             </div>
