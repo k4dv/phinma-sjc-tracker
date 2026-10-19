@@ -11,6 +11,7 @@ import {
   Trash2, 
   CheckCircle2, 
   AlertCircle,
+  AlertTriangle,
   X,
   FileSpreadsheet,
   Camera,
@@ -18,7 +19,10 @@ import {
   Activity,
   Clock,
   ArrowRight,
-  Loader2
+  Loader2,
+  UploadCloud,
+  Pencil,
+  Check
 } from 'lucide-react';
 
 const CATEGORIES = [
@@ -40,6 +44,35 @@ const DEFAULT_STAFF_USERS = [
 ];
 
 const META_DELIMITER = '|||SJC_META|||';
+
+// Messenger-style relative time formatter (e.g., 'just now', '5m ago', '2h ago', 'yesterday', '3d ago')
+export const formatRelativeTime = (timestamp) => {
+  if (!timestamp) return 'just now';
+
+  const parsed = typeof timestamp === 'number' || !isNaN(Number(timestamp))
+    ? new Date(Number(timestamp))
+    : new Date(timestamp);
+
+  if (isNaN(parsed.getTime())) {
+    return String(timestamp);
+  }
+
+  const diffSec = Math.floor((Date.now() - parsed.getTime()) / 1000);
+  if (diffSec < 45) return 'just now';
+  if (diffSec < 90) return '1m ago';
+  
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  
+  const diffHours = Math.floor(diffMin / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+  
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays === 1) return 'yesterday';
+  if (diffDays < 7) return `${diffDays}d ago`;
+  
+  return parsed.toLocaleDateString([], { month: 'short', day: 'numeric' });
+};
 
 // Unpacks embedded cloud photo and Canva stack from unit string if present
 export const unpackSupplyItem = (row) => {
@@ -77,7 +110,7 @@ export const packSupplyUnit = (cleanUnit, img, stack) => {
   const payload = {};
   if (img) payload.img = img;
   if (Array.isArray(stack) && stack.length > 0) {
-    payload.stack = stack.slice(0, 5);
+    payload.stack = stack.slice(0, 6);
   }
   return `${baseUnit}${META_DELIMITER}${JSON.stringify(payload)}`;
 };
@@ -88,8 +121,17 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
   const [toastMessage, setToastMessage] = useState('');
   const [toastType, setToastType] = useState('success');
   
-  // Enlarged 30% center screen modal state
+  // Enlarged center screen modal state
   const [activeEnlargedItem, setActiveEnlargedItem] = useState(null);
+
+  // In-Modal Supply Name Editing State
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [editNameInput, setEditNameInput] = useState('');
+  const [isSavingName, setIsSavingName] = useState(false);
+
+  // In-app Delete Confirmation Modal State
+  const [itemToDelete, setItemToDelete] = useState(null);
+  const [isDeletingSupply, setIsDeletingSupply] = useState(false);
 
   // Add New Supply Item Modal State
   const [showAddModal, setShowAddModal] = useState(false);
@@ -111,6 +153,10 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
   // 2-3 Second Hover State for displaying full name
   const [hoveredFullNameId, setHoveredFullNameId] = useState(null);
   const hoverTimerRef = useRef(null);
+
+  // Drag-and-drop target tracking for PC view
+  const [dragOverTargetId, setDragOverTargetId] = useState(null);
+  const [isModalDragOver, setIsModalDragOver] = useState(false);
 
   // Photo upload loading indicator & ref
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
@@ -150,7 +196,6 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     setTimeout(() => setToastMessage(''), 3500);
   };
 
-  // Sync unpacked photos & stacks whenever supplies prop updates
   useEffect(() => {
     if (!supplies || supplies.length === 0) return;
 
@@ -188,11 +233,9 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     }
   }, [supplies]);
 
-  // Fetch Real Staff Avatars and Fallback Metadata from Supabase on mount
   useEffect(() => {
     const fetchCloudData = async () => {
       try {
-        // 1. Fetch all staff avatars from `profiles`
         const { data: profileRows } = await supabase
           .from('profiles')
           .select('id, name, avatar');
@@ -209,7 +252,6 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
           setStaffAvatarsMap(avatarMap);
         }
 
-        // 2. Fetch protected system sync row in `logs` (`id = 'keep_table_structure'`)
         const { data: metaRows } = await supabase
           .from('logs')
           .select('*')
@@ -240,7 +282,6 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
           } catch (_) {}
         }
 
-        // 3. Also fetch latest `supplies` rows directly to ensure fresh unpack
         const { data: supplyRows } = await supabase
           .from('supplies')
           .select('*')
@@ -258,7 +299,6 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     fetchCloudData();
   }, [setSupplies]);
 
-  // Real-time WebSocket Subscription for Supplies, Profiles, and System Meta
   useEffect(() => {
     const channel = supabase
       .channel('supplies-live-multi-device-sync')
@@ -358,7 +398,6 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     };
   }, [setSupplies]);
 
-  // Helper to resolve staff avatar from live database map or local cache
   const getStaffAvatar = (staffId, staffName = '') => {
     const cleanId = String(staffId || '').toLowerCase();
     const strippedId = cleanId.replace(/^0+/, '');
@@ -373,7 +412,6 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     );
   };
 
-  // Compress image down to a sharp, lightweight ~12KB thumbnail for instant database sync
   const compressImage = (file, maxDim = 180) => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -411,7 +449,83 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     });
   };
 
-  // Helper to persist photos & stacks to BOTH `supplies.unit` AND `logs` (`keep_table_structure`)
+  const extractCleanImageUrl = (raw) => {
+    if (!raw) return '';
+    try {
+      if (raw.includes('google.') && raw.includes('imgurl=')) {
+        const urlObj = new URL(raw);
+        const directImg = urlObj.searchParams.get('imgurl');
+        if (directImg) return decodeURIComponent(directImg);
+      }
+    } catch (_) {}
+    return raw;
+  };
+
+  const compressFromUrlOrDataUri = (rawUrl, maxDim = 180) => {
+    return new Promise((resolve) => {
+      const url = extractCleanImageUrl(rawUrl);
+      if (!url) return resolve('');
+
+      if (url.startsWith('data:image')) {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
+          if (width > height) {
+            if (width > maxDim) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            }
+          } else {
+            if (height > maxDim) {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', 0.76));
+        };
+        img.onerror = () => resolve(url);
+        img.src = url;
+        return;
+      }
+
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        try {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
+          if (width > height) {
+            if (width > maxDim) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            }
+          } else {
+            if (height > maxDim) {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', 0.76));
+        } catch (_) {
+          resolve(url);
+        }
+      };
+      img.onerror = () => resolve(url);
+      img.src = url;
+    });
+  };
+
   const syncMetadataToCloud = async (targetSupplyId, nextPhotosMap, nextStacksMap, updatedQuantity = null) => {
     const targetItem = supplies.find((s) => s.id === targetSupplyId);
     const cleanUnit = targetItem ? String(targetItem.unit || 'pcs').split(META_DELIMITER)[0] : 'pcs';
@@ -424,22 +538,18 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
       updatePayload.quantity = Number(updatedQuantity);
     }
 
-    // 1. Primary Sync: Update `supplies` row directly (Guaranteed table & permissions)
     const { error: supplyErr } = await supabase
       .from('supplies')
       .update(updatePayload)
       .eq('id', targetSupplyId);
 
     if (supplyErr && updatedQuantity !== null) {
-      // If `unit` had any length constraint, still ensure `quantity` updates
       await supabase
         .from('supplies')
         .update({ quantity: Number(updatedQuantity) })
         .eq('id', targetSupplyId);
     }
 
-    // 2. Secondary Mirror: Save master dictionary in `logs` (`id = 'keep_table_structure'`)
-    // Uses ONLY the 4 verified columns of `logs`: `id, time, author, text`
     try {
       const masterPayload = JSON.stringify({
         photos: nextPhotosMap,
@@ -457,21 +567,14 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     }
   };
 
-  // Handle uploading item photo and storing permanently in database
-  const handlePhotoSelect = async (e) => {
-    const file = e.target.files?.[0];
-    const targetId = uploadTargetIdRef.current;
-    if (!file || !targetId) return;
-
+  const saveSupplyPhoto = async (targetId, photoString) => {
+    if (!targetId || !photoString) return;
     setIsUploadingPhoto(true);
 
     try {
-      const compressedBase64 = await compressImage(file, 180);
-
-      // 1. Update local state & cache immediately
       const nextPhotosMap = {
         ...supplyPhotos,
-        [targetId]: compressedBase64
+        [targetId]: photoString
       };
       setSupplyPhotos(nextPhotosMap);
       try {
@@ -480,28 +583,91 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
 
       if (setSupplies) {
         setSupplies((prev) =>
-          prev.map((s) => (s.id === targetId ? { ...s, image_url: compressedBase64 } : s))
+          prev.map((s) => (s.id === targetId ? { ...s, image_url: photoString } : s))
         );
       }
       if (activeEnlargedItem?.id === targetId) {
-        setActiveEnlargedItem((prev) => ({ ...prev, image_url: compressedBase64 }));
+        setActiveEnlargedItem((prev) => ({ ...prev, image_url: photoString }));
       }
 
-      // 2. Sync to Supabase Database (`supplies` row + `keep_table_structure` mirror)
       await syncMetadataToCloud(targetId, nextPhotosMap, usageHistory, null);
-
       showToast('Item photo saved and synced to all devices!', 'success');
     } catch (err) {
-      console.error('Upload processing error:', err);
-      showToast('Failed to process image.', 'error');
+      console.error('Photo save error:', err);
+      showToast('Failed to save image.', 'error');
     } finally {
       setIsUploadingPhoto(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
       uploadTargetIdRef.current = null;
     }
   };
 
-  // Handle photo selection inside the "Add Item" Modal
+  const handlePhotoSelect = async (e) => {
+    const file = e.target.files?.[0];
+    const targetId = uploadTargetIdRef.current;
+    if (!file || !targetId) return;
+
+    try {
+      const compressedBase64 = await compressImage(file, 180);
+      await saveSupplyPhoto(targetId, compressedBase64);
+    } catch (err) {
+      console.error('Upload processing error:', err);
+      showToast('Failed to process image.', 'error');
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleDropOnItem = async (e, supplyId) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOverTargetId(null);
+    setIsModalDragOver(false);
+
+    if (!isAdmin) return;
+
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) {
+      const file = files[0];
+      if (file.type && file.type.startsWith('image/')) {
+        try {
+          const compressed = await compressImage(file, 180);
+          await saveSupplyPhoto(supplyId, compressed);
+        } catch {
+          showToast('Could not process dropped image file.', 'error');
+        }
+        return;
+      }
+    }
+
+    let droppedUrl = '';
+    const htmlData = e.dataTransfer.getData('text/html');
+    if (htmlData) {
+      const match = htmlData.match(/<img[^>]+src=["']([^"']+)["']/i);
+      if (match && match[1]) {
+        droppedUrl = match[1];
+      }
+    }
+
+    if (!droppedUrl) {
+      const uri = e.dataTransfer.getData('text/uri-list');
+      const plain = e.dataTransfer.getData('text/plain');
+      droppedUrl = uri || plain || '';
+    }
+
+    if (droppedUrl) {
+      try {
+        const processedPhoto = await compressFromUrlOrDataUri(droppedUrl.trim(), 180);
+        if (processedPhoto) {
+          await saveSupplyPhoto(supplyId, processedPhoto);
+        } else {
+          showToast('Invalid or inaccessible image URL.', 'error');
+        }
+      } catch {
+        showToast('Failed to load image from drop source.', 'error');
+      }
+    }
+  };
+
   const handleNewItemPhotoSelect = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -513,19 +679,36 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     }
   };
 
-  // Handle creating a new supply item from the Add Item Modal
+  // Handle creating a new supply item & automatically record "Added by (User) at (Time)"
   const handleAddSupplyItem = async (e) => {
     e.preventDefault();
     if (!newItemName.trim()) return;
 
     setIsAddingSupply(true);
     const cleanUnit = newItemUnit.trim() || 'pcs';
-    const packedUnit = packSupplyUnit(cleanUnit, newItemPhoto, []);
+    const initialQty = parseInt(newItemQty, 10) || 0;
+
+    const currentUserName = user?.name || (isAdmin ? 'Facilities Supervisor' : 'Staff Member');
+    const currentUserId = user?.id || '001';
+    const userAvatar = getStaffAvatar(currentUserId, currentUserName);
+    const timestampNow = Date.now();
+
+    const initialAuditRecord = {
+      userId: currentUserId,
+      userName: currentUserName,
+      avatar: userAvatar,
+      timestamp: timestampNow,
+      time: 'just now',
+      amount: initialQty,
+      action: 'added'
+    };
+
+    const packedUnit = packSupplyUnit(cleanUnit, newItemPhoto, [initialAuditRecord]);
 
     const newSupplyObj = {
       name: newItemName.trim(),
       category: newItemCategory,
-      quantity: parseInt(newItemQty, 10) || 0,
+      quantity: initialQty,
       unit: packedUnit,
       threshold: parseInt(newItemThreshold, 10) || 1
     };
@@ -540,19 +723,39 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
 
       if (data && data[0]) {
         const createdUnpacked = unpackSupplyItem(data[0]);
+        createdUnpacked.cloud_stack = [initialAuditRecord];
+
+        const nextStacks = {
+          ...usageHistory,
+          [createdUnpacked.id]: [initialAuditRecord]
+        };
+        setUsageHistory(nextStacks);
+        try {
+          localStorage.setItem('sjc_supplies_usage_history', JSON.stringify(nextStacks));
+        } catch (_) {}
+
+        let nextPhotos = supplyPhotos;
         if (newItemPhoto) {
           createdUnpacked.image_url = newItemPhoto;
-          const nextPhotos = { ...supplyPhotos, [createdUnpacked.id]: newItemPhoto };
+          nextPhotos = { ...supplyPhotos, [createdUnpacked.id]: newItemPhoto };
           setSupplyPhotos(nextPhotos);
           try {
             localStorage.setItem('sjc_supply_photos', JSON.stringify(nextPhotos));
           } catch (_) {}
-          await syncMetadataToCloud(createdUnpacked.id, nextPhotos, usageHistory, null);
         }
+
+        await syncMetadataToCloud(createdUnpacked.id, nextPhotos, nextStacks, initialQty);
 
         if (setSupplies) {
           setSupplies((prev) => [...prev, createdUnpacked]);
         }
+
+        supabase.from('logs').insert([{
+          id: `log-${timestampNow}`,
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          author: currentUserName,
+          text: `Added new supply "${newSupplyObj.name}" (${initialQty} ${cleanUnit}) to inventory.`
+        }]).catch(() => {});
       }
 
       setNewItemName('');
@@ -561,12 +764,49 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
       setNewItemThreshold('5');
       setNewItemPhoto('');
       setShowAddModal(false);
-      showToast(`Added "${newSupplyObj.name}" to inventory!`, 'success');
+      showToast(`Added "${newSupplyObj.name}" by ${currentUserName}!`, 'success');
     } catch (err) {
       console.error('Failed to add supply item:', err);
       showToast('Could not save supply item to database.', 'error');
     } finally {
       setIsAddingSupply(false);
+    }
+  };
+
+  // Inline Supply Name Editing Handler in Enlarged Modal
+  const handleSaveSupplyName = async (e) => {
+    if (e) e.preventDefault();
+    if (!activeEnlargedItem || !editNameInput.trim()) return;
+
+    const trimmed = editNameInput.trim();
+    if (trimmed === activeEnlargedItem.name) {
+      setIsEditingName(false);
+      return;
+    }
+
+    setIsSavingName(true);
+    try {
+      const { error } = await supabase
+        .from('supplies')
+        .update({ name: trimmed })
+        .eq('id', activeEnlargedItem.id);
+
+      if (error) throw error;
+
+      if (setSupplies) {
+        setSupplies((prev) =>
+          prev.map((s) => (s.id === activeEnlargedItem.id ? { ...s, name: trimmed } : s))
+        );
+      }
+
+      setActiveEnlargedItem((prev) => ({ ...prev, name: trimmed }));
+      setIsEditingName(false);
+      showToast(`Renamed to "${trimmed}"!`, 'success');
+    } catch (err) {
+      console.error('Failed to update supply name:', err);
+      showToast('Could not update name in database.', 'error');
+    } finally {
+      setIsSavingName(false);
     }
   };
 
@@ -577,7 +817,6 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     fileInputRef.current?.click();
   };
 
-  // Hover timer triggers full name display after 2 seconds
   const handleMouseEnterItem = (itemId) => {
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
     hoverTimerRef.current = setTimeout(() => {
@@ -593,7 +832,6 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     setHoveredFullNameId(null);
   };
 
-  // Open the Deduction Popup
   const handleOpenDeductModal = (item, e) => {
     if (e) e.stopPropagation();
     if (item.quantity <= 0) {
@@ -605,7 +843,6 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     setDeductError('');
   };
 
-  // Execute the Requisition Deduction and sync both stock & Canva stack to database
   const handleConfirmDeduction = async (e) => {
     e.preventDefault();
     if (!deductModalItem) return;
@@ -625,8 +862,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     const updatedQty = deductModalItem.quantity - count;
     const supplyId = deductModalItem.id;
 
-    // 1. Build Canva-Style Stack Log Entry with user's synced avatar
-    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const timestampNow = Date.now();
     const currentUserName = user?.name || (isAdmin ? 'Facilities Supervisor' : 'Staff Member');
     const currentUserId = user?.id || '001';
     const userAvatar = getStaffAvatar(currentUserId, currentUserName);
@@ -635,12 +871,14 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
       userId: currentUserId,
       userName: currentUserName,
       avatar: userAvatar,
-      time: now,
-      amount: count
+      timestamp: timestampNow,
+      time: 'just now',
+      amount: count,
+      action: 'checkout'
     };
 
     const existingRecords = usageHistory[supplyId] || deductModalItem.cloud_stack || [];
-    const updatedItemHistory = [newRecord, ...existingRecords.slice(0, 4)];
+    const updatedItemHistory = [newRecord, ...existingRecords.slice(0, 5)];
     const nextFullHistory = {
       ...usageHistory,
       [supplyId]: updatedItemHistory
@@ -651,7 +889,6 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
       localStorage.setItem('sjc_supplies_usage_history', JSON.stringify(nextFullHistory));
     } catch (_) {}
 
-    // 2. Optimistic State Update
     if (setSupplies) {
       setSupplies((prev) =>
         prev.map((s) =>
@@ -670,14 +907,12 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
       }));
     }
 
-    // 3. Persist both new quantity AND Canva stack + photo to Supabase Database
     try {
       await syncMetadataToCloud(supplyId, supplyPhotos, nextFullHistory, updatedQty);
 
-      // Post handover log using only the 4 verified columns of `logs`
       supabase.from('logs').insert([{
-        id: `log-${Date.now()}`,
-        time: now,
+        id: `log-${timestampNow}`,
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         author: currentUserName,
         text: `Checked out ${count} ${deductModalItem.unit} of ${deductModalItem.name}. Remaining: ${updatedQty} ${deductModalItem.unit}.`
       }]).catch(() => {});
@@ -693,7 +928,6 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     }
   };
 
-  // Direct Admin-Only Add Stock (+ button) syncing to database
   const handleAdminAddStock = async (supplyId, e) => {
     if (e) e.stopPropagation();
     if (!isAdmin) return;
@@ -702,28 +936,61 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     if (!target) return;
 
     const updatedQty = target.quantity + 1;
+    const timestampNow = Date.now();
+    const currentUserName = user?.name || (isAdmin ? 'Facilities Supervisor' : 'Staff Member');
+    const currentUserId = user?.id || '001';
+    const userAvatar = getStaffAvatar(currentUserId, currentUserName);
+
+    const replenishRecord = {
+      userId: currentUserId,
+      userName: currentUserName,
+      avatar: userAvatar,
+      timestamp: timestampNow,
+      time: 'just now',
+      amount: 1,
+      action: 'restocked'
+    };
+
+    const existingRecords = usageHistory[supplyId] || target.cloud_stack || [];
+    const updatedItemHistory = [replenishRecord, ...existingRecords.slice(0, 5)];
+    const nextFullHistory = {
+      ...usageHistory,
+      [supplyId]: updatedItemHistory
+    };
+
+    setUsageHistory(nextFullHistory);
+    try {
+      localStorage.setItem('sjc_supplies_usage_history', JSON.stringify(nextFullHistory));
+    } catch (_) {}
 
     if (setSupplies) {
       setSupplies((prev) =>
-        prev.map((s) => (s.id === supplyId ? { ...s, quantity: updatedQty } : s))
+        prev.map((s) => (s.id === supplyId ? { ...s, quantity: updatedQty, cloud_stack: updatedItemHistory } : s))
       );
     }
 
     if (activeEnlargedItem?.id === supplyId) {
-      setActiveEnlargedItem((prev) => ({ ...prev, quantity: updatedQty }));
+      setActiveEnlargedItem((prev) => ({ ...prev, quantity: updatedQty, cloud_stack: updatedItemHistory }));
     }
 
     try {
-      await syncMetadataToCloud(supplyId, supplyPhotos, usageHistory, updatedQty);
+      await syncMetadataToCloud(supplyId, supplyPhotos, nextFullHistory, updatedQty);
     } catch {
       await supabase.from('supplies').update({ quantity: updatedQty }).eq('id', supplyId);
     }
   };
 
-  const handleDeleteSupply = async (supplyId, name, e) => {
+  const promptDeleteSupply = (supplyId, name, e) => {
     if (e) e.stopPropagation();
     if (!isAdmin) return;
-    if (!window.confirm(`Delete "${name}" from inventory?`)) return;
+    setItemToDelete({ id: supplyId, name });
+  };
+
+  const handleConfirmDeleteSupply = async () => {
+    if (!itemToDelete) return;
+    const { id: supplyId, name } = itemToDelete;
+
+    setIsDeletingSupply(true);
 
     if (activeEnlargedItem?.id === supplyId) {
       setActiveEnlargedItem(null);
@@ -739,6 +1006,9 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     } catch {
       await supabase.from('supplies').delete().eq('id', supplyId);
       showToast(`Removed "${name}" from stock.`, 'success');
+    } finally {
+      setIsDeletingSupply(false);
+      setItemToDelete(null);
     }
   };
 
@@ -778,14 +1048,14 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
 
   const lowStockItems = supplies.filter((s) => s.quantity <= s.threshold);
 
-  // Resolves Canva-style profile avatar stack for a given supply item using synced cloud data
   const getItemUserStack = (item) => {
     const supplyId = item?.id;
     const recorded = usageHistory[supplyId] || item?.cloud_stack;
     if (recorded && recorded.length > 0) {
       return recorded.map((st) => ({
         ...st,
-        avatar: getStaffAvatar(st.userId, st.userName) || st.avatar || ''
+        avatar: getStaffAvatar(st.userId, st.userName) || st.avatar || '',
+        relativeTime: formatRelativeTime(st.timestamp || st.time)
       }));
     }
     const hashNum = String(supplyId || 1).charCodeAt(0) || 1;
@@ -793,8 +1063,9 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
       userId: st.id,
       userName: st.name,
       avatar: getStaffAvatar(st.id, st.name),
-      time: 'Earlier today',
-      amount: 1
+      relativeTime: 'earlier today',
+      amount: 1,
+      action: 'checkout'
     }));
   };
 
@@ -819,7 +1090,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
         className="hidden"
       />
 
-      {/* Apple Notification Stack In-Animation Keyframes & Green Aura */}
+      {/* Dynamic Status-Aware Hover Aura Styles */}
       <style>{`
         @keyframes iosNotificationIn {
           0% {
@@ -846,17 +1117,36 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
           opacity: 1 !important;
         }
 
-        /* Hover Aura Glow & Micro-Enlarge Effect */
         .supply-aura-card {
           transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1),
                       box-shadow 0.22s cubic-bezier(0.16, 1, 0.3, 1),
-                      border-color 0.22s ease;
+                      border-color 0.22s ease,
+                      background-color 0.22s ease;
         }
         .supply-aura-card:hover,
         .supply-aura-card:active {
-          transform: scale(1.02);
-          box-shadow: 0 0 24px rgba(23, 110, 87, 0.28), 0 4px 14px rgba(0, 0, 0, 0.04);
-          border-color: rgba(52, 211, 153, 0.85) !important;
+          transform: scale(1.018);
+        }
+
+        /* 🟢 HEALTHY / OPTIMAL AURA */
+        .supply-aura-card.aura-healthy:hover,
+        .supply-aura-card.aura-healthy:active {
+          box-shadow: 0 0 24px rgba(23, 110, 87, 0.22), 0 4px 14px rgba(0, 0, 0, 0.04);
+          border-color: rgba(52, 211, 153, 0.9) !important;
+        }
+
+        /* 🟡 MILD WARNING / RUNNING LOW AURA */
+        .supply-aura-card.aura-warning:hover,
+        .supply-aura-card.aura-warning:active {
+          box-shadow: 0 0 24px rgba(245, 158, 11, 0.26), 0 4px 14px rgba(0, 0, 0, 0.04);
+          border-color: rgba(251, 191, 36, 0.95) !important;
+        }
+
+        /* 🔴 CRITICAL / LOW STOCK AURA */
+        .supply-aura-card.aura-critical:hover,
+        .supply-aura-card.aura-critical:active {
+          box-shadow: 0 0 24px rgba(244, 63, 94, 0.26), 0 4px 14px rgba(0, 0, 0, 0.04);
+          border-color: rgba(251, 113, 133, 0.95) !important;
         }
       `}</style>
 
@@ -886,7 +1176,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
             Stockroom Items
           </h2>
           <p className="text-[11px] text-slate-400">
-            {supplies.length} items recorded &bull; {isPcMode ? 'Landscape View' : 'Campus Inventory'}
+            {supplies.length} items recorded &bull; {isPcMode ? 'Landscape View (Drag & Drop Active)' : 'Campus Inventory'}
           </p>
         </div>
 
@@ -907,7 +1197,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
         </div>
       </div>
 
-      {/* Search Input Bar + Add Item Button on the Right */}
+      {/* Search Input Bar + Add Item Button */}
       <div className="flex items-center gap-2">
         <div className="relative flex-1">
           <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -963,9 +1253,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
       </div>
 
       {/* ============================================================== */}
-      {/* 📦 SUPPLIES LIST: LANDSCAPE RECTANGLE CARDS                      */}
-      {/* Desktop: Balanced 2-Column Grid (Left-to-Right then Down)        */}
-      {/* Mobile: Single Column Stack                                     */}
+      {/* 📦 SUPPLIES LIST: 3-TIER STATUS AURA + CLEAN IMAGE BORDER       */}
       {/* ============================================================== */}
       <div 
         key={`${selectedCategory}_${isPcMode ? 'pc' : 'mobile'}_${searchQuery}`}
@@ -976,21 +1264,73 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
         }
       >
         {filteredSupplies.map((item, index) => {
-          const isLow = item.quantity <= item.threshold;
+          const qty = Number(item.quantity) || 0;
+          const threshold = Number(item.threshold) || 1;
+
+          const isCritical = qty <= threshold;
+          const isWarning = !isCritical && qty <= Math.ceil(threshold * 1.5);
+          
+          const auraClass = isCritical 
+            ? 'aura-critical' 
+            : isWarning 
+            ? 'aura-warning' 
+            : 'aura-healthy';
+
+          const borderBaseClass = isCritical 
+            ? 'border-rose-200 ring-1 ring-rose-200/70 bg-rose-50/15' 
+            : isWarning 
+            ? 'border-amber-200 ring-1 ring-amber-200/60 bg-amber-50/10' 
+            : 'border-slate-100 bg-white';
+
           const itemImg = supplyPhotos[item.id] || item.image_url || item.image;
           const stackUsers = getItemUserStack(item);
+          const isDraggingOverThis = dragOverTargetId === item.id;
+          const latestLog = stackUsers[0];
 
           return (
             <div
               key={item.id}
-              onClick={() => setActiveEnlargedItem(item)}
+              onClick={() => {
+                setActiveEnlargedItem(item);
+                setEditNameInput(item.name);
+                setIsEditingName(false);
+              }}
+              onDragOver={(e) => {
+                if (isPcMode && isAdmin) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (dragOverTargetId !== item.id) setDragOverTargetId(item.id);
+                }
+              }}
+              onDragLeave={(e) => {
+                if (isPcMode && isAdmin) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (!e.currentTarget.contains(e.relatedTarget)) {
+                    setDragOverTargetId(null);
+                  }
+                }
+              }}
+              onDrop={(e) => handleDropOnItem(e, item.id)}
               style={{
                 animationDelay: !animationsDisabled ? `${Math.min(index * 35, 350)}ms` : '0ms'
               }}
-              className={`bg-white rounded-3xl p-4 border shadow-[0_2px_12px_rgba(0,0,0,0.02)] flex items-center justify-between gap-3.5 cursor-pointer select-none supply-aura-card relative ${
+              className={`rounded-3xl p-4 border shadow-[0_2px_12px_rgba(0,0,0,0.02)] flex items-center justify-between gap-3.5 cursor-pointer select-none supply-aura-card relative overflow-hidden ${auraClass} ${borderBaseClass} ${
                 !animationsDisabled ? 'anim-ios-notification' : ''
-              } ${isLow ? 'border-rose-200 ring-1 ring-rose-200/70' : 'border-slate-100'}`}
+              } ${isDraggingOverThis ? 'ring-2 ring-[#176e57] border-[#176e57] scale-[1.02]' : ''}`}
             >
+              {/* Drag & Drop Visual Drop Overlay for PC Mode */}
+              {isDraggingOverThis && (
+                <div className="absolute inset-0 z-40 bg-emerald-950/20 backdrop-blur-[2px] border-2 border-dashed border-[#176e57] rounded-3xl flex flex-col items-center justify-center p-3 animate-pop pointer-events-none">
+                  <div className="bg-white/95 px-3 py-1.5 rounded-2xl shadow-xl flex items-center gap-2 border border-emerald-300">
+                    <UploadCloud className="w-4 h-4 text-[#176e57] animate-bounce" />
+                    <span className="text-xs font-bold text-[#176e57]">
+                      Drop image to update picture
+                    </span>
+                  </div>
+                </div>
+              )}
+
               {/* Left Section: Item Details & Canva Avatar Stack */}
               <div className="flex items-center gap-3.5 min-w-0 flex-1">
                 <div className="min-w-0 flex-1">
@@ -1004,7 +1344,6 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                         {item.name}
                       </h3>
 
-                      {/* 2-3 Second Full Name Tooltip Bubble */}
                       {hoveredFullNameId === item.id && (
                         <div className="absolute left-0 bottom-full mb-2 z-50 bg-slate-900/95 backdrop-blur-xs text-white text-xs font-bold py-1.5 px-3 rounded-2xl shadow-2xl border border-slate-700 whitespace-nowrap animate-pop pointer-events-none">
                           <div className="flex items-center gap-1.5">
@@ -1022,29 +1361,37 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                       </span>
                     )}
 
-                    {isLow && (
+                    {isCritical && (
                       <span className="text-[9px] font-bold bg-rose-50 text-rose-700 border border-rose-200 px-2 py-0.5 rounded-full animate-pulse flex-shrink-0">
-                        Low Stock
+                        {qty === 0 ? 'Out of Stock' : 'Low Stock'}
+                      </span>
+                    )}
+
+                    {isWarning && (
+                      <span className="text-[9px] font-bold bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full flex-shrink-0">
+                        Running Low
                       </span>
                     )}
                   </div>
 
-                  {/* Stock Count & Canva Avatar Stacking */}
+                  {/* Stock Count & Live Messenger Relative Time Activity */}
                   <div className="flex items-center gap-3 mt-1.5 flex-wrap">
                     <p className="text-xs font-extrabold text-slate-700 font-sans">
                       {item.quantity} <span className="font-normal text-slate-400">{item.unit}</span>
                     </p>
 
-                    {/* Canva Avatar Stacking with Real Synced Staff Profile Pictures */}
                     <div className="flex items-center gap-1.5">
                       <div className="flex items-center -space-x-1.5">
                         {stackUsers.slice(0, 3).map((st, sIdx) => {
                           const pfp = st.avatar || getStaffAvatar(st.userId, st.userName);
+                          const actionLabel = st.action === 'added' ? 'added to storage' : st.action === 'restocked' ? 'restocked' : 'checked out';
                           return (
                             <div
                               key={sIdx}
-                              title={`${st.userName} checked out ${st.amount} ${item.unit}`}
-                              className="w-6 h-6 rounded-full ring-2 ring-white bg-[#176e57] text-white flex items-center justify-center font-bold text-[9px] overflow-hidden flex-shrink-0"
+                              title={`${st.userName} ${actionLabel} &bull; ${st.relativeTime}`}
+                              className={`w-6 h-6 rounded-full ring-2 ring-white text-white flex items-center justify-center font-bold text-[9px] overflow-hidden flex-shrink-0 ${
+                                st.action === 'added' ? 'bg-sky-600' : 'bg-[#176e57]'
+                              }`}
                             >
                               {pfp ? (
                                 <img src={pfp} alt={st.userName} className="w-full h-full object-cover" />
@@ -1060,8 +1407,15 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                           </div>
                         )}
                       </div>
-                      <span className="text-[10px] text-slate-400 hidden sm:inline font-medium">
-                        recent draw
+
+                      <span className="text-[10px] text-slate-400 font-medium">
+                        {latestLog ? (
+                          latestLog.action === 'added' 
+                            ? `added ${latestLog.relativeTime}`
+                            : latestLog.action === 'restocked'
+                            ? `replenished ${latestLog.relativeTime}`
+                            : `drawn ${latestLog.relativeTime}`
+                        ) : 'recorded'}
                       </span>
                     </div>
                   </div>
@@ -1097,7 +1451,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                     {isAdmin && (
                       <button
                         type="button"
-                        onClick={(e) => handleDeleteSupply(item.id, item.name, e)}
+                        onClick={(e) => promptDeleteSupply(item.id, item.name, e)}
                         className="text-slate-400 hover:text-rose-600 active:scale-90 transition p-1.5 hover:bg-rose-50 rounded-xl"
                         title="Delete supply"
                       >
@@ -1108,26 +1462,26 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                 </div>
               </div>
 
-              {/* Top-Right Rounded Square Picture Slot */}
+              {/* Clean, Neutral Thumbnail Border Container */}
               <div className="flex flex-col items-end justify-between self-stretch flex-shrink-0">
                 <div 
                   onClick={(e) => triggerUpload(e, item.id)}
-                  title={isAdmin ? "Tap to upload/change item picture" : "Item photo"}
-                  className={`w-16 h-16 rounded-2xl border-2 flex items-center justify-center overflow-hidden transition relative group/square flex-shrink-0 ${
+                  title={isAdmin ? "Tap or drop image from Google / desktop" : "Item photo"}
+                  className={`w-16 h-16 rounded-2xl border flex items-center justify-center overflow-hidden transition-all duration-200 relative group/square flex-shrink-0 ${
                     itemImg 
-                      ? 'border-emerald-400/70 bg-slate-900 shadow-xs' 
-                      : 'border-dashed border-slate-200 bg-slate-50 hover:border-[#176e57]'
-                  } ${isAdmin ? 'active:scale-90 cursor-pointer' : 'cursor-default'}`}
+                      ? 'border-slate-200/80 bg-white shadow-2xs ring-1 ring-black/[0.02]' 
+                      : 'border-dashed border-slate-300/80 bg-slate-50/80 hover:border-slate-400 hover:bg-slate-100/70'
+                  } ${isAdmin ? 'active:scale-95 cursor-pointer' : 'cursor-default'}`}
                 >
                   {itemImg ? (
                     <img 
                       src={itemImg} 
                       alt={item.name} 
-                      className="w-full h-full object-cover" 
+                      className="w-full h-full object-cover p-0.5 rounded-2xl" 
                     />
                   ) : (
                     <div className="flex flex-col items-center justify-center text-slate-400 group-hover/square:text-[#176e57] transition">
-                      <Camera className="w-5 h-5" />
+                      <Camera className="w-4 h-4" />
                       <span className="text-[8px] font-bold uppercase mt-0.5">
                         {isAdmin ? 'Photo' : 'Item'}
                       </span>
@@ -1135,7 +1489,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                   )}
 
                   {isAdmin && (
-                    <div className="absolute inset-0 bg-black/45 opacity-0 group-hover/square:opacity-100 flex items-center justify-center transition rounded-2xl">
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/square:opacity-100 flex items-center justify-center transition rounded-2xl">
                       {isUploadingPhoto && uploadTargetIdRef.current === item.id ? (
                         <Loader2 className="w-4 h-4 text-white animate-spin" />
                       ) : (
@@ -1180,7 +1534,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                     Add New Supply Item
                   </h3>
                   <p className="text-[10px] text-slate-400">
-                    Register item to central campus storage
+                    Will be registered under {user?.name || 'Administrator'}
                   </p>
                 </div>
               </div>
@@ -1194,7 +1548,6 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
             </div>
 
             <form onSubmit={handleAddSupplyItem} className="space-y-3 text-xs">
-              {/* Top Row: Item Name + Top-Right Photo Upload Square */}
               <div className="flex items-start gap-3">
                 <div className="flex-1">
                   <label className="text-[11px] font-bold text-slate-700 block mb-1">
@@ -1217,7 +1570,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                   <div
                     onClick={() => newItemFileInputRef.current?.click()}
                     title="Upload item photo"
-                    className="w-11 h-11 rounded-2xl border-2 border-dashed border-slate-300 hover:border-[#176e57] bg-slate-50 flex items-center justify-center cursor-pointer overflow-hidden transition active:scale-95"
+                    className="w-11 h-11 rounded-2xl border border-dashed border-slate-300 hover:border-[#176e57] bg-white flex items-center justify-center cursor-pointer overflow-hidden transition active:scale-95"
                   >
                     {newItemPhoto ? (
                       <img src={newItemPhoto} alt="Preview" className="w-full h-full object-cover" />
@@ -1318,51 +1671,121 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
       )}
 
       {/* ============================================================== */}
-      {/* 🌟 ENLARGED 30% SCREEN CENTER CARD MODAL                        */}
+      {/* 🌟 ENLARGED SCREEN CENTER CARD MODAL (WITH EDIT NAME)           */}
       {/* ============================================================== */}
       {activeEnlargedItem && typeof document !== 'undefined' && createPortal(
         <div 
           className="fixed inset-0 z-[200] bg-black/65 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-backdrop select-none"
-          onClick={() => setActiveEnlargedItem(null)}
+          onClick={() => {
+            setActiveEnlargedItem(null);
+            setIsEditingName(false);
+          }}
         >
           <div 
             className="bg-white w-full max-w-md rounded-3xl p-5 shadow-2xl border border-slate-100 space-y-4 animate-pop overflow-hidden relative"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Modal Header with Top-Right Rounded Square Photo Slot */}
             <div className="flex items-start justify-between border-b border-slate-100 pb-3.5 gap-3">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 uppercase tracking-wider">
                     {activeEnlargedItem.category || 'General'}
                   </span>
-                  {activeEnlargedItem.quantity <= activeEnlargedItem.threshold && (
+
+                  {activeEnlargedItem.quantity <= 0 ? (
+                    <span className="text-[10px] font-bold text-rose-700 bg-rose-50 px-2 py-0.5 rounded-full border border-rose-200 flex items-center gap-1">
+                      <AlertCircle className="w-3 h-3 text-rose-600" /> Out of Stock
+                    </span>
+                  ) : activeEnlargedItem.quantity <= activeEnlargedItem.threshold ? (
                     <span className="text-[10px] font-bold text-rose-700 bg-rose-50 px-2 py-0.5 rounded-full border border-rose-200 flex items-center gap-1">
                       <AlertCircle className="w-3 h-3 text-rose-600" /> Restock Alert
                     </span>
-                  )}
+                  ) : activeEnlargedItem.quantity <= Math.ceil(activeEnlargedItem.threshold * 1.5) ? (
+                    <span className="text-[10px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200 flex items-center gap-1">
+                      <AlertCircle className="w-3 h-3 text-amber-600" /> Running Low
+                    </span>
+                  ) : null}
                 </div>
-                <h3 className="text-base font-extrabold text-slate-900 mt-1.5 leading-snug break-words">
-                  {activeEnlargedItem.name}
-                </h3>
+
+                {/* Editable Supply Name in Modal */}
+                {isEditingName ? (
+                  <form onSubmit={handleSaveSupplyName} className="flex items-center gap-1.5 mt-2">
+                    <input
+                      type="text"
+                      autoFocus
+                      required
+                      value={editNameInput}
+                      onChange={(e) => setEditNameInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') setIsEditingName(false);
+                      }}
+                      className="text-sm font-extrabold text-slate-900 px-2.5 py-1 bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:border-[#176e57] flex-1"
+                    />
+                    <button
+                      type="submit"
+                      disabled={isSavingName || !editNameInput.trim()}
+                      title="Save name"
+                      className="p-1.5 bg-[#176e57] hover:bg-[#135c49] text-white rounded-xl active:scale-95 transition"
+                    >
+                      {isSavingName ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSavingName}
+                      onClick={() => setIsEditingName(false)}
+                      title="Cancel"
+                      className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-500 rounded-xl active:scale-95 transition"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </form>
+                ) : (
+                  <div className="flex items-center gap-2 mt-1.5 group/title">
+                    <h3 className="text-base font-extrabold text-slate-900 leading-snug break-words">
+                      {activeEnlargedItem.name}
+                    </h3>
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditNameInput(activeEnlargedItem.name);
+                          setIsEditingName(true);
+                        }}
+                        title="Edit supply name"
+                        className="p-1 text-slate-400 hover:text-[#176e57] hover:bg-emerald-50 rounded-lg transition active:scale-90"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="flex items-center gap-2 flex-shrink-0">
-                {/* Top-Right Rounded Photo Square inside Enlarged Modal */}
                 <div 
                   onClick={(e) => triggerUpload(e, activeEnlargedItem.id)}
-                  title={isAdmin ? "Tap to upload/change item photo" : "Item picture"}
-                  className={`w-16 h-16 rounded-2xl border-2 flex items-center justify-center overflow-hidden transition relative group/modal-square ${
-                    supplyPhotos[activeEnlargedItem.id] || activeEnlargedItem.image_url || activeEnlargedItem.image
-                      ? 'border-emerald-400 bg-slate-900 shadow-md'
-                      : 'border-dashed border-slate-200 bg-slate-50 hover:border-[#176e57]'
+                  onDragOver={(e) => {
+                    if (isPcMode && isAdmin) {
+                      e.preventDefault();
+                      setIsModalDragOver(true);
+                    }
+                  }}
+                  onDragLeave={() => setIsModalDragOver(false)}
+                  onDrop={(e) => handleDropOnItem(e, activeEnlargedItem.id)}
+                  title={isAdmin ? "Tap or drag image from Google here" : "Item picture"}
+                  className={`w-16 h-16 rounded-2xl border flex items-center justify-center overflow-hidden transition-all duration-200 relative group/modal-square ${
+                    isModalDragOver
+                      ? 'border-[#176e57] ring-4 ring-emerald-400/30 bg-emerald-50 scale-105'
+                      : supplyPhotos[activeEnlargedItem.id] || activeEnlargedItem.image_url || activeEnlargedItem.image
+                      ? 'border-slate-200/90 bg-white shadow-sm ring-1 ring-black/[0.03]'
+                      : 'border-dashed border-slate-300 bg-slate-50 hover:border-slate-400'
                   } ${isAdmin ? 'cursor-pointer active:scale-95' : 'cursor-default'}`}
                 >
                   {supplyPhotos[activeEnlargedItem.id] || activeEnlargedItem.image_url || activeEnlargedItem.image ? (
                     <img 
                       src={supplyPhotos[activeEnlargedItem.id] || activeEnlargedItem.image_url || activeEnlargedItem.image} 
                       alt={activeEnlargedItem.name} 
-                      className="w-full h-full object-cover" 
+                      className="w-full h-full object-cover p-0.5 rounded-2xl" 
                     />
                   ) : (
                     <div className="flex flex-col items-center justify-center text-slate-400">
@@ -1372,7 +1795,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                   )}
 
                   {isAdmin && (
-                    <div className="absolute inset-0 bg-black/45 opacity-0 group-hover/modal-square:opacity-100 flex items-center justify-center transition rounded-2xl">
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/modal-square:opacity-100 flex items-center justify-center transition rounded-2xl">
                       <Camera className="w-4 h-4 text-white" />
                     </div>
                   )}
@@ -1380,7 +1803,10 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
 
                 <button
                   type="button"
-                  onClick={() => setActiveEnlargedItem(null)}
+                  onClick={() => {
+                    setActiveEnlargedItem(null);
+                    setIsEditingName(false);
+                  }}
                   className="p-1.5 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition self-start"
                 >
                   <X className="w-5 h-5" />
@@ -1400,12 +1826,13 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                 </span>
               </div>
 
-              {/* Progress bar */}
               <div className="w-full h-2.5 bg-slate-200 rounded-full overflow-hidden">
                 <div 
                   className={`h-full rounded-full transition-all duration-500 ${
                     activeEnlargedItem.quantity <= activeEnlargedItem.threshold 
                       ? 'bg-rose-500' 
+                      : activeEnlargedItem.quantity <= Math.ceil(activeEnlargedItem.threshold * 1.5)
+                      ? 'bg-amber-500'
                       : 'bg-[#176e57]'
                   }`}
                   style={{
@@ -1416,8 +1843,18 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
 
               <div className="flex justify-between items-center text-[10px] text-slate-500 pt-0.5 font-medium">
                 <span>Critical Threshold: <strong>{activeEnlargedItem.threshold} {activeEnlargedItem.unit}</strong></span>
-                <span className={activeEnlargedItem.quantity <= activeEnlargedItem.threshold ? 'text-rose-600 font-bold' : 'text-emerald-700 font-bold'}>
-                  {activeEnlargedItem.quantity <= activeEnlargedItem.threshold ? 'Critical Deficit' : 'Optimal Capacity'}
+                <span className={
+                  activeEnlargedItem.quantity <= activeEnlargedItem.threshold 
+                    ? 'text-rose-600 font-bold' 
+                    : activeEnlargedItem.quantity <= Math.ceil(activeEnlargedItem.threshold * 1.5)
+                    ? 'text-amber-600 font-bold'
+                    : 'text-emerald-700 font-bold'
+                }>
+                  {activeEnlargedItem.quantity <= activeEnlargedItem.threshold 
+                    ? 'Critical Deficit' 
+                    : activeEnlargedItem.quantity <= Math.ceil(activeEnlargedItem.threshold * 1.5)
+                    ? 'Running Low'
+                    : 'Optimal Capacity'}
                 </span>
               </div>
             </div>
@@ -1427,14 +1864,13 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
               <div className="flex items-center justify-between">
                 <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wide flex items-center gap-1.5">
                   <Users className="w-3.5 h-3.5 text-[#176e57]" />
-                  Recent Draw Personnel
+                  Activity & Personnel History
                 </h4>
                 <span className="text-[10px] text-slate-400 font-medium">
-                  Shift Requisitions
+                  Audited Log
                 </span>
               </div>
 
-              {/* Overlapping Avatar Bar with Details */}
               <div className="p-3 bg-white border border-slate-200/80 rounded-2xl space-y-2 shadow-2xs">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center -space-x-2">
@@ -1443,7 +1879,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                       return (
                         <div
                           key={idx}
-                          title={st.userName}
+                          title={`${st.userName} &bull; ${st.relativeTime}`}
                           className="w-8 h-8 rounded-full ring-2 ring-white bg-[#176e57] text-white flex items-center justify-center font-bold text-xs overflow-hidden shadow-xs"
                         >
                           {pfp ? (
@@ -1457,33 +1893,52 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                   </div>
 
                   <span className="text-[10px] font-semibold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                    Synced Handover
+                    Messenger-Synced Time
                   </span>
                 </div>
 
-                {/* Detailed Logs of Recent Requisitions */}
+                {/* Detailed Logs with Action Badges & Relative Times */}
                 <div className="space-y-1.5 pt-1 border-t border-slate-100 max-h-36 overflow-y-auto pr-1">
                   {getItemUserStack(activeEnlargedItem).map((log, lIdx) => {
                     const pfp = log.avatar || getStaffAvatar(log.userId, log.userName);
+                    const isAdded = log.action === 'added';
+                    const isRestocked = log.action === 'restocked';
+
                     return (
-                      <div key={lIdx} className="flex items-center justify-between text-[11px] p-1.5 rounded-xl bg-slate-50/70">
+                      <div key={lIdx} className="flex items-center justify-between text-[11px] p-2 rounded-xl bg-slate-50/70 border border-slate-100">
                         <div className="flex items-center gap-2">
-                          <div className="w-5 h-5 rounded-full bg-[#176e57] text-white flex items-center justify-center font-bold text-[8px] overflow-hidden flex-shrink-0">
+                          <div className={`w-5 h-5 rounded-full text-white flex items-center justify-center font-bold text-[8px] overflow-hidden flex-shrink-0 ${
+                            isAdded ? 'bg-sky-600' : isRestocked ? 'bg-emerald-600' : 'bg-[#176e57]'
+                          }`}>
                             {pfp ? (
                               <img src={pfp} alt={log.userName} className="w-full h-full object-cover" />
                             ) : (
                               <span>{log.userName?.[0] || 'S'}</span>
                             )}
                           </div>
-                          <span className="font-bold text-slate-800">{log.userName}</span>
-                          <span className="text-[10px] text-slate-400 font-mono flex items-center gap-0.5">
-                            <Clock className="w-3 h-3 text-slate-400" />
-                            {log.time}
-                          </span>
+                          <div>
+                            <span className="font-bold text-slate-800 mr-1.5">{log.userName}</span>
+                            <span className="text-[10px] text-slate-400 font-mono inline-flex items-center gap-0.5">
+                              <Clock className="w-2.5 h-2.5 text-slate-400" />
+                              {log.relativeTime}
+                            </span>
+                          </div>
                         </div>
-                        <span className="text-[10px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200">
-                          -{log.amount} {activeEnlargedItem.unit}
-                        </span>
+
+                        {/* Action Badge */}
+                        {isAdded ? (
+                          <span className="text-[10px] font-bold text-sky-700 bg-sky-50 px-2 py-0.5 rounded-md border border-sky-200">
+                            Registered item (+{log.amount})
+                          </span>
+                        ) : isRestocked ? (
+                          <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
+                            Replenished (+{log.amount})
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200">
+                            -{log.amount} {activeEnlargedItem.unit}
+                          </span>
+                        )}
                       </div>
                     );
                   })}
@@ -1545,7 +2000,6 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
             className="bg-white w-full max-w-sm rounded-3xl p-5 shadow-2xl border border-slate-100 space-y-4 animate-sheet-up overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Modal Header */}
             <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
               <div className="flex items-center gap-2">
                 <div className="p-2 bg-amber-50 text-amber-700 rounded-xl">
@@ -1570,7 +2024,6 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
               </button>
             </div>
 
-            {/* Error Message */}
             {deductError && (
               <div className="p-2.5 bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium rounded-xl flex items-center gap-2 animate-shake">
                 <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
@@ -1604,7 +2057,6 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                 </div>
               </div>
 
-              {/* Quick Increment Preset Chips */}
               <div>
                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5">
                   Quick Select Quantity:
@@ -1631,7 +2083,6 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                 </div>
               </div>
 
-              {/* Staff Requisition Identity Footnote */}
               <div className="p-2.5 bg-slate-50 rounded-2xl border border-slate-200/70 text-[11px] text-slate-600 flex items-center justify-between">
                 <span>Accountable Personnel:</span>
                 <strong className="text-slate-800 font-semibold">
@@ -1639,7 +2090,6 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                 </strong>
               </div>
 
-              {/* Action Buttons */}
               <div className="flex gap-2 pt-1">
                 <button
                   type="button"
@@ -1658,6 +2108,65 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                 </button>
               </div>
             </form>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* ============================================================== */}
+      {/* 🗑️ IN-APP DELETE CONFIRMATION MODAL                             */}
+      {/* ============================================================== */}
+      {itemToDelete && typeof document !== 'undefined' && createPortal(
+        <div 
+          className="fixed inset-0 z-[300] bg-black/65 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-backdrop text-slate-800 select-none"
+          onClick={() => !isDeletingSupply && setItemToDelete(null)}
+        >
+          <div 
+            className="bg-white w-full max-w-xs rounded-3xl p-5 shadow-2xl border border-slate-100 space-y-3.5 animate-pop text-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 mx-auto flex items-center justify-center animate-pop">
+              <Trash2 className="w-6 h-6 stroke-[2.2]" />
+            </div>
+
+            <div>
+              <h3 className="text-sm font-bold text-slate-900 leading-snug">
+                Delete "{itemToDelete.name}"?
+              </h3>
+              <p className="text-xs text-slate-500 mt-1">
+                Are you sure you want to remove this supply item from campus inventory?
+              </p>
+            </div>
+
+            <p className="text-[10px] text-slate-400">
+              This action cannot be undone and will permanently remove its recorded records.
+            </p>
+
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              <button
+                type="button"
+                disabled={isDeletingSupply}
+                onClick={() => setItemToDelete(null)}
+                className="py-2.5 px-3 bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-700 font-bold rounded-xl text-xs transition disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingSupply}
+                onClick={handleConfirmDeleteSupply}
+                className="py-2.5 px-3 bg-rose-600 hover:bg-rose-700 active:scale-95 text-white font-bold rounded-xl text-xs shadow-xs transition flex items-center justify-center gap-1.5 disabled:opacity-50"
+              >
+                {isDeletingSupply ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <span>Delete</span>
+                )}
+              </button>
+            </div>
           </div>
         </div>,
         document.body

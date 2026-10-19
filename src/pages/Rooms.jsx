@@ -15,30 +15,26 @@ import {
   Check, 
   Snowflake, 
   Search, 
-  ChevronDown 
+  ChevronDown,
+  Clock
 } from 'lucide-react';
 
 /* ========================================================================== */
-/* 🎨 CUSTOMIZE ROOM CARD PASTEL COLORS HERE                                  */
-/* Change any Tailwind class below if you want to tweak the tints or borders! */
+/* 🎨 ORIGINAL ROOM CARD PASTEL COLORS                                        */
 /* ========================================================================== */
 const ROOM_CARD_THEMES = {
-  // 1. Needs Reclean: Pastel low-transparency rose for the whole card
   needsReclean: {
     card: 'bg-rose-50/70 border-rose-200/90 hover:border-rose-300 shadow-xs',
     pill: 'bg-rose-100 text-rose-800 border-rose-300'
   },
-  // 2. Verified: Subtle pastel blue tint
   verified: {
     card: 'bg-blue-50/35 border-blue-200/80 hover:border-blue-300 shadow-2xs',
     pill: 'bg-blue-50 text-blue-700 border-blue-200'
   },
-  // 3. Cleaned: Subtle pastel emerald tint
   cleaned: {
     card: 'bg-emerald-50/35 border-emerald-200/80 hover:border-emerald-300 shadow-2xs',
     pill: 'bg-emerald-50 text-emerald-700 border-emerald-200'
   },
-  // 4. Pending: Default white card
   pending: {
     card: 'bg-white border-slate-100 hover:border-slate-200 shadow-[0_2px_10px_rgba(0,0,0,0.02)]',
     pill: 'bg-slate-100 text-slate-600 border-slate-200'
@@ -235,7 +231,7 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {}, is
   ).length;
 
   return (
-    <div className={`p-4 pt-3 space-y-3.5 pb-28 text-slate-800 ${isPcMode ? '' : 'max-w-md mx-auto'}`}>
+    <div className={`p-4 pt-3 space-y-3.5 pb-28 text-slate-800 ${isPcMode ? 'max-w-5xl mx-auto' : 'max-w-md mx-auto'}`}>
       
       {/* Apple Notification Stack In-Animation Keyframes */}
       <style>{`
@@ -262,6 +258,16 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {}, is
           animation: none !important;
           transform: none !important;
           opacity: 1 !important;
+        }
+
+        .room-card-hover {
+          transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+                      box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+                      border-color 0.2s ease;
+        }
+        .room-card-hover:hover {
+          transform: translateY(-2px);
+          box-shadow: 0 8px 20px -4px rgba(0, 0, 0, 0.05);
         }
       `}</style>
 
@@ -322,9 +328,8 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {}, is
           </div>
         </div>
 
-        {/* Building Selector with Floating Overlay Menu */}
+        {/* Building Selector */}
         <div className={`relative ${isPcMode ? 'col-span-5' : 'w-full'} z-30`}>
-          {/* Backdrop to close overlay when clicking outside */}
           {isBuildingDropdownOpen && (
             <div 
               className="fixed inset-0 z-30" 
@@ -359,7 +364,6 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {}, is
               </div>
             </button>
 
-            {/* Floating Dropdown Overlay */}
             {isBuildingDropdownOpen && (
               <div className="absolute left-0 right-0 top-full mt-1.5 z-50 bg-white border border-slate-100/90 rounded-2xl shadow-xl overflow-hidden p-2 space-y-1 animate-dropdown">
                 {BUILDINGS.map((b) => {
@@ -438,12 +442,12 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {}, is
         </div>
       )}
 
-      {/* Classrooms List: Staggered Apple Notification Slide-Up */}
+      {/* Classrooms List: 3 Balanced Landscape Rectangles on PC / Normal Stack on Phone */}
       <div 
         key={`${selectedBuilding}_f${selectedFloor}_${searchQuery}`}
         className={
           isPcMode
-            ? 'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3.5'
+            ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5'
             : 'space-y-3'
         }
       >
@@ -455,7 +459,6 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {}, is
             const roomBuilding = room.building || selectedBuilding;
             const displayRoomNumber = String(room.id).replace(/^[A-Za-z]/, '');
 
-            // Choose theme based on room status
             const theme = isReclean
               ? ROOM_CARD_THEMES.needsReclean
               : isVerified
@@ -471,15 +474,25 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {}, is
                 style={{
                   animationDelay: !animationsDisabled ? `${Math.min(index * 42, 380)}ms` : '0ms'
                 }}
-                className={`rounded-3xl p-4 border transition-all duration-200 active:scale-[0.99] cursor-pointer space-y-2.5 flex flex-col justify-between ${theme.card} ${
+                className={`rounded-3xl p-4 border transition-all duration-200 active:scale-[0.99] cursor-pointer room-card-hover select-none flex flex-col justify-between ${
+                  isPcMode ? 'min-h-[110px] gap-2.5' : 'space-y-2.5'
+                } ${theme.card} ${
                   !animationsDisabled ? 'anim-ios-notification' : ''
                 }`}
               >
                 <div>
                   <div className="flex items-center justify-between">
-                    <span className="text-sm font-bold text-slate-900">
-                      Room {displayRoomNumber}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-bold text-slate-900">
+                        Room {displayRoomNumber}
+                      </span>
+                      {/* On PC, keep the building badge right on the title row for a sleek rectangle */}
+                      {isPcMode && (
+                        <span className="text-[10px] font-bold text-slate-500 bg-white/70 px-2 py-0.5 rounded-full border border-slate-200/60 shadow-2xs">
+                          {roomBuilding} &bull; F{room.floor}
+                        </span>
+                      )}
+                    </div>
 
                     <span
                       className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full capitalize border shadow-2xs ${theme.pill}`}
@@ -488,10 +501,14 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {}, is
                     </span>
                   </div>
 
+                  {/* Tags row */}
                   <div className="mt-2 flex items-center gap-1.5 flex-wrap">
-                    <span className="text-[10px] font-bold text-slate-500 bg-white/70 px-2 py-0.5 rounded-full border border-slate-200/60 shadow-2xs">
-                      {roomBuilding} &bull; F{room.floor}
-                    </span>
+                    {/* On Phone, keep original layout untouched */}
+                    {!isPcMode && (
+                      <span className="text-[10px] font-bold text-slate-500 bg-white/70 px-2 py-0.5 rounded-full border border-slate-200/60 shadow-2xs">
+                        {roomBuilding} &bull; F{room.floor}
+                      </span>
+                    )}
                     
                     {room.hasStudents && (
                       <span className="text-[9px] font-bold bg-amber-50 text-amber-800 border border-amber-300 px-2 py-0.5 rounded-full flex items-center gap-1 shadow-2xs">
@@ -501,13 +518,14 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {}, is
                     )}
 
                     {isReclean && room.recleanReason && (
-                      <span className="text-[9px] font-bold bg-rose-100/90 text-rose-800 border border-rose-300 px-2 py-0.5 rounded-full truncate max-w-[140px]" title={room.recleanReason}>
+                      <span className="text-[9px] font-bold bg-rose-100/90 text-rose-800 border border-rose-300 px-2 py-0.5 rounded-full truncate max-w-[180px]" title={room.recleanReason}>
                         "{room.recleanReason}"
                       </span>
                     )}
                   </div>
                 </div>
 
+                {/* Bottom indicators */}
                 <div className="flex items-center justify-between flex-wrap gap-2 text-[11px] text-slate-500 pt-2 border-t border-slate-200/50">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className={`flex items-center gap-1 ${room.acChecked ? 'text-emerald-700' : 'text-amber-600 font-medium'}`}>
@@ -594,7 +612,7 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {}, is
                 <div className={`w-5 h-5 rounded-lg flex items-center justify-center border transition ${
                   hasStudentsVal ? 'bg-amber-500 border-amber-500 text-white' : 'border-slate-300 bg-white'
                 }`}>
-                  {hasStudentsVal && <Check className="w-3 h-3 stroke-[3]" />}
+                  {hasStudentsVal && <Check className="w-3.5 h-3.5 stroke-[3]" />}
                 </div>
               </div>
 

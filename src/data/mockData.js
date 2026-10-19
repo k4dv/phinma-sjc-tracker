@@ -1,5 +1,5 @@
 // ==============================================================
-// ZERO-MOCK CONFIGURATION (SUPABASE AS SINGLE SOURCE OF TRUTH)
+// NOTE: DONT TOUCH THIS IDK LEL DI GUMAGANA PAG WALA EH SORRY :C
 // ==============================================================
 
 export const DEMO_STAFF = [];

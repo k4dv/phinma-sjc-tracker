@@ -68,7 +68,6 @@ export default function Dashboard({
 
   const activeCount = teacherRequests.filter((r) => r.status !== 'completed').length;
 
-  // Dynamic Sanitation Status Badge (Red -> Yellow -> Green)
   const getSanitationBadge = () => {
     if (cleanPercentage === 100 && totalRooms > 0) {
       return (
@@ -91,13 +90,11 @@ export default function Dashboard({
     );
   };
 
-  // Color coding: Yellow for Teacher request, Blue for Admin, Default for Staff
   const getNoteStyle = (log) => {
     const text = (log.text || '').toLowerCase();
     const author = (log.author || '').toLowerCase();
     const role = (log.role || '').toLowerCase();
 
-    // Teacher Request / Faculty Alert -> Yellow / Amber
     if (author.includes('faculty') || text.includes('teacher request') || text.includes('faculty alert')) {
       return {
         cardClass: 'bg-amber-50/70 border-amber-200',
@@ -109,7 +106,6 @@ export default function Dashboard({
       };
     }
 
-    // Admin -> Blue
     if (role === 'admin' || author.includes('admin') || author.includes('supervisor')) {
       return {
         cardClass: 'bg-sky-50/70 border-sky-200',
@@ -121,7 +117,6 @@ export default function Dashboard({
       };
     }
 
-    // Normal Staff -> Default Slate
     return {
       cardClass: 'bg-slate-50 border-slate-100',
       dotClass: 'bg-[#176e57]',
@@ -243,12 +238,10 @@ export default function Dashboard({
       role: authorRole
     };
 
-    // 1. Instant optimistic local UI update for immediate response on both staff and admin
     if (setLogs) {
       setLogs((prev) => [newLogItem, ...prev]);
     }
 
-    // 2. Dual-Sync: Save to localStorage and notify other active browser tabs
     try {
       const stored = JSON.parse(localStorage.getItem('sjc_cached_logs') || '[]');
       const updated = [newLogItem, ...stored.filter((l) => l.id !== newLogItem.id)];
@@ -260,7 +253,6 @@ export default function Dashboard({
 
     setShiftNoteInput('');
 
-    // 3. Persist to Supabase Database
     try {
       const { error } = await supabase.from('logs').insert([newLogItem]);
       if (error) {
@@ -276,7 +268,6 @@ export default function Dashboard({
   return (
     <div className={`p-4 space-y-4 pb-24 ${isPcMode ? 'max-w-5xl mx-auto' : 'max-w-md mx-auto'}`}>
       
-      {/* Spatial Orchestration Keyframes */}
       <style>{`
         @keyframes dashTopIn {
           0% {
@@ -438,8 +429,8 @@ export default function Dashboard({
             </div>
           </div>
 
-          {/* Card 4: Campus Buildings Liquid/Battery Level Cards */}
-          <div className="bg-white rounded-2xl p-4 shadow-[0_2px_8px_rgba(0,0,0,0.04)] border border-slate-100 space-y-2.5 anim-left-2">
+          {/* Card 4: Campus Buildings Radial Progress Ring Widgets */}
+          <div className="bg-white rounded-2xl p-4 shadow-[0_2px_8px_rgba(0,0,0,0.04)] border border-slate-100 space-y-3 anim-left-2">
             <div className="flex items-center justify-between border-b border-slate-100 pb-2">
               <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wide flex items-center gap-1.5">
                 <Building2 className="w-3.5 h-3.5 text-slate-400" /> Campus Buildings
@@ -449,16 +440,16 @@ export default function Dashboard({
                 type="button"
                 onClick={() => setShowStaffModal(true)}
                 title="View Active Staff"
-                className="flex items-center gap-1.5 px-2 py-1 bg-emerald-50 hover:bg-emerald-100/80 active:scale-95 text-[#176e57] rounded-xl text-xs font-semibold transition border border-emerald-200/60 shadow-xs"
+                className="flex items-center gap-1.5 px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100/80 active:scale-95 text-[#176e57] rounded-xl text-xs font-semibold transition border border-emerald-200/60 shadow-2xs"
               >
                 <Users className="w-3.5 h-3.5 text-[#176e57]" />
-                <span className="text-[10px]">Staff</span>
+                <span className="text-[11px] font-bold">Staff</span>
                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
               </button>
             </div>
 
-            {/* 3 Building Liquid/Battery Cards */}
-            <div className="grid grid-cols-3 gap-2.5 pt-1">
+            {/* 3 Circular Ring Progression Cards */}
+            <div className="grid grid-cols-3 gap-2.5 pt-0.5">
               {CAMPUS_BUILDINGS.map((bldg) => {
                 const bldgRooms = rooms.filter(
                   (r) => (r.building || 'Dimasalang') === bldg.id
@@ -470,63 +461,71 @@ export default function Dashboard({
                 const percentage = total > 0 ? Math.round((cleaned / total) * 100) : 0;
                 const isAllDone = total > 0 && cleaned === total;
 
+                // SVG Circular Progress Ring calculations (Radius 17 = ~106.8 perimeter)
+                const radius = 17;
+                const circumference = 2 * Math.PI * radius;
+                const strokeDashoffset = circumference - (percentage / 100) * circumference;
+
                 return (
                   <button
                     key={bldg.id}
                     onClick={() => navigate('/rooms', { state: { targetBuilding: bldg.id } })}
-                    className={`relative p-3.5 rounded-2xl text-center flex flex-col items-center justify-between active:scale-95 transition-all duration-300 border overflow-hidden min-h-[92px] group ${
+                    className={`py-3 px-2 rounded-2xl text-center flex flex-col items-center justify-between active:scale-95 transition-all duration-200 border group select-none ${
                       isAllDone
-                        ? 'border-emerald-300 bg-emerald-50/50 shadow-xs'
-                        : 'border-slate-200/80 bg-slate-50/60 hover:border-slate-300'
+                        ? 'bg-emerald-50/40 border-emerald-300/80 ring-1 ring-emerald-300/40 shadow-2xs'
+                        : 'bg-white border-slate-200/80 hover:border-[#176e57]/40 shadow-2xs'
                     }`}
                   >
-                    {/* Liquid fill rising from the bottom */}
-                    <div
-                      className={`absolute bottom-0 inset-x-0 transition-[height] duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] pointer-events-none ${
-                        isAllDone
-                          ? 'bg-gradient-to-t from-emerald-200/90 via-emerald-100/70 to-emerald-50/50 border-t-2 border-emerald-400'
-                          : percentage > 0
-                          ? 'bg-gradient-to-t from-emerald-100/80 via-[#176e57]/15 to-[#176e57]/5 border-t-2 border-[#176e57]/40'
-                          : 'h-0'
-                      }`}
-                      style={{ height: `${percentage}%` }}
-                    >
-                      {percentage > 0 && !isAllDone && (
-                        <div className="absolute top-0 inset-x-0 h-0.5 bg-white/70 animate-pulse" />
-                      )}
+                    {/* Top: SVG Radial Progression Gauge */}
+                    <div className="relative w-12 h-12 flex items-center justify-center my-0.5">
+                      <svg className="w-full h-full -rotate-90 transform" viewBox="0 0 44 44">
+                        {/* Background Ring Track (Shows what is left to finish) */}
+                        <circle
+                          cx="22"
+                          cy="22"
+                          r={radius}
+                          fill="none"
+                          stroke={isAllDone ? '#d1fae5' : '#f1f5f9'}
+                          strokeWidth="3.5"
+                        />
+                        {/* Active Progress Arc */}
+                        <circle
+                          cx="22"
+                          cy="22"
+                          r={radius}
+                          fill="none"
+                          stroke={isAllDone ? '#10b981' : '#176e57'}
+                          strokeWidth="3.5"
+                          strokeDasharray={circumference}
+                          strokeDashoffset={strokeDashoffset}
+                          strokeLinecap="round"
+                          className="transition-all duration-700 ease-out"
+                        />
+                      </svg>
+
+                      {/* Inside Ring Indicator */}
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        {isAllDone ? (
+                          <Check className="w-4 h-4 text-emerald-600 stroke-[3] animate-pop" />
+                        ) : (
+                          <span className={`text-[10px] font-extrabold font-mono ${
+                            percentage > 0 ? 'text-[#176e57]' : 'text-slate-400'
+                          }`}>
+                            {percentage}%
+                          </span>
+                        )}
+                      </div>
                     </div>
 
-                    {/* Card Content */}
-                    <div className="relative z-10 flex items-center justify-center mb-1">
-                      {isAllDone ? (
-                        <div className="w-5 h-5 rounded-full bg-emerald-100 text-[#176e57] flex items-center justify-center animate-pop">
-                          <Check className="w-3.5 h-3.5 stroke-[2.5]" />
-                        </div>
-                      ) : (
-                        <Building2 className={`w-5 h-5 transition-colors duration-200 ${
-                          percentage > 0 ? 'text-[#176e57]' : 'text-slate-400'
-                        }`} />
-                      )}
-                    </div>
-
-                    <span className="relative z-10 text-xs font-bold block truncate w-full text-slate-800">
+                    {/* Middle: Building Name */}
+                    <h4 className="text-xs font-extrabold text-slate-800 leading-tight mt-1.5 truncate max-w-full">
                       {bldg.name}
-                    </span>
+                    </h4>
 
-                    <div className="relative z-10 flex items-center justify-center gap-1.5 mt-1">
-                      <span className="text-[10px] font-mono text-slate-500 font-semibold">
-                        {cleaned}/{total}
-                      </span>
-                      {percentage > 0 && (
-                        <span className={`text-[9px] font-bold font-mono px-1 rounded ${
-                          isAllDone
-                            ? 'text-emerald-800 bg-emerald-100/90'
-                            : 'text-[#176e57] bg-white/90 border border-slate-200/60 shadow-2xs'
-                        }`}>
-                          {percentage}%
-                        </span>
-                      )}
-                    </div>
+                    {/* Bottom: Room Ratio Footnote */}
+                    <p className="text-[10px] text-slate-400 font-medium font-mono mt-0.5">
+                      {cleaned}/{total} checked
+                    </p>
                   </button>
                 );
               })}
