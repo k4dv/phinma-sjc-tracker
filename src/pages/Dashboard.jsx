@@ -1,26 +1,29 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../data/supabaseClient';
 import StaffPresenceModal from '../components/StaffPresenceModal';
 import TeacherRequestModal from '../components/TeacherRequestModal';
 import { 
-  Send, 
   Clock, 
   Layers, 
   Package, 
   Building2, 
   CheckCircle2, 
   AlertCircle, 
-  AlertTriangle,
+  AlertTriangle, 
   MessageSquare, 
   Trash2, 
   Users, 
   BellRing, 
   Check, 
   UserCheck, 
-  Flame,
-  Plus
+  Flame, 
+  Plus,
+  Filter,
+  ArrowUp,
+  ChevronDown,
+  Sparkles
 } from 'lucide-react';
 
 const CAMPUS_BUILDINGS = [
@@ -28,6 +31,24 @@ const CAMPUS_BUILDINGS = [
   { id: 'Silang', name: 'Silang' },
   { id: 'Phinma', name: 'Phinma' }
 ];
+
+const getRelativeTime = (timestamp, timeStr) => {
+  if (!timestamp && !timeStr) return 'Just now';
+  const dateObj = timestamp ? new Date(timestamp) : null;
+  if (!dateObj || isNaN(dateObj.getTime())) return timeStr || 'Just now';
+
+  const diffSec = Math.floor((Date.now() - dateObj.getTime()) / 1000);
+  if (diffSec < 45) return 'Just now';
+  if (diffSec < 90) return '1m ago';
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHours = Math.floor(diffMin / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays === 1) return 'Yesterday';
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return timeStr || dateObj.toLocaleDateString([], { month: 'short', day: 'numeric' });
+};
 
 export default function Dashboard({
   rooms = [],
@@ -44,6 +65,7 @@ export default function Dashboard({
   const navigate = useNavigate();
   const isAdmin = user?.role === 'admin' || Number(user?.access_level) >= 2;
   const isPcMode = isAdmin && isDesktopView;
+  const animationsDisabled = localStorage.getItem('sjc_animations_disabled') === 'true';
 
   const [shiftNoteInput, setShiftNoteInput] = useState('');
   const [isSubmittingNote, setIsSubmittingNote] = useState(false);
@@ -51,7 +73,47 @@ export default function Dashboard({
   const [showTeacherModal, setShowTeacherModal] = useState(false);
   const [requestFilter, setRequestFilter] = useState('active');
 
-  // Custom in-app delete modal state
+  // Logs Hub: Clean Category Filter Dropdown
+  const [logCategoryFilter, setLogCategoryFilter] = useState('all'); // 'all' | 'rooms' | 'supplies' | 'notes'
+  const [showFilterDropdown, setShowFilterDropdown] = useState(false);
+
+  // ID of newly posted note to trigger Apple spring animation
+  const [recentlyAddedId, setRecentlyAddedId] = useState(null);
+  const filterDropdownRef = useRef(null);
+
+  // Close filter dropdown on outside click
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (filterDropdownRef.current && !filterDropdownRef.current.contains(e.target)) {
+        setShowFilterDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Listen for local real-time events to animate incoming notes
+  useEffect(() => {
+    const handleLocalLog = (e) => {
+      if (e.detail?.id && !animationsDisabled) {
+        setRecentlyAddedId(e.detail.id);
+        setTimeout(() => setRecentlyAddedId(null), 1200);
+      }
+    };
+    window.addEventListener('sjc_log_created', handleLocalLog);
+    return () => window.removeEventListener('sjc_log_created', handleLocalLog);
+  }, [animationsDisabled]);
+
+  // Sweep progress animation on mount
+  const [animateProgress, setAnimateProgress] = useState(animationsDisabled);
+
+  useEffect(() => {
+    if (animationsDisabled) return;
+    const timer = setTimeout(() => setAnimateProgress(true), 100);
+    return () => clearTimeout(timer);
+  }, [animationsDisabled]);
+
+  // Custom delete modal state
   const [itemToDelete, setItemToDelete] = useState(null);
 
   const totalRooms = rooms.length;
@@ -60,7 +122,18 @@ export default function Dashboard({
   ).length;
   const cleanPercentage = totalRooms > 0 ? Math.round((cleanedRooms / totalRooms) * 100) : 0;
   const roomsLeft = Math.max(0, totalRooms - cleanedRooms);
-  const lowStockCount = supplies.filter((s) => s.quantity <= s.threshold).length;
+
+  const effectiveSupplies = supplies && supplies.length > 0 
+    ? supplies 
+    : (() => {
+        try {
+          return JSON.parse(localStorage.getItem('sjc_cached_supplies') || '[]');
+        } catch {
+          return [];
+        }
+      })();
+
+  const lowStockCount = effectiveSupplies.filter((s) => Number(s.quantity) <= Number(s.threshold)).length;
 
   const displayedRequests = teacherRequests.filter((r) => 
     requestFilter === 'active' ? r.status !== 'completed' : r.status === 'completed'
@@ -94,38 +167,91 @@ export default function Dashboard({
     const text = (log.text || '').toLowerCase();
     const author = (log.author || '').toLowerCase();
     const role = (log.role || '').toLowerCase();
+    const id = String(log.id || '').toLowerCase();
 
+    // 1. Reclean Alert (Subtle Rose)
+    if (text.includes('reclean') || text.includes('flagged')) {
+      return {
+        cardClass: 'bg-rose-50/75 border-rose-200/90',
+        squircleClass: 'bg-rose-100 text-rose-700 border-rose-200',
+        badgeClass: 'bg-rose-100 text-rose-800 border-rose-300 font-bold',
+        label: 'Reclean Alert',
+        icon: AlertCircle,
+        type: 'rooms'
+      };
+    }
+
+    // 2. Room Sanitation Check (Fresh Emerald)
+    if (text.includes('cleaned room') || text.includes('verified room') || text.includes('inspection')) {
+      return {
+        cardClass: 'bg-emerald-50/70 border-emerald-200/80',
+        squircleClass: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+        badgeClass: 'bg-emerald-100 text-emerald-800 border-emerald-300 font-bold',
+        label: 'Rooms',
+        icon: CheckCircle2,
+        type: 'rooms'
+      };
+    }
+
+    // 3. Inventory / Stock Checkout (Teal)
+    if (text.includes('checked out') || text.includes('supply') || text.includes('inventory')) {
+      return {
+        cardClass: 'bg-teal-50/70 border-teal-200/80',
+        squircleClass: 'bg-teal-100 text-teal-800 border-teal-200',
+        badgeClass: 'bg-teal-100 text-teal-800 border-teal-300 font-bold',
+        label: 'Inventory',
+        icon: Package,
+        type: 'supplies'
+      };
+    }
+
+    // 4. Teacher Request (Warm Amber)
     if (author.includes('faculty') || text.includes('teacher request') || text.includes('faculty alert')) {
       return {
-        cardClass: 'bg-amber-50/70 border-amber-200',
-        dotClass: 'bg-amber-500',
-        badgeClass: 'bg-amber-100 text-amber-800 border-amber-300',
+        cardClass: 'bg-amber-50/75 border-amber-200/90',
+        squircleClass: 'bg-amber-100 text-amber-800 border-amber-200',
+        badgeClass: 'bg-amber-100 text-amber-900 border-amber-300 font-bold',
         label: 'Teacher Request',
-        authorClass: 'text-amber-950 font-bold',
-        textClass: 'text-amber-900'
+        icon: BellRing,
+        type: 'notes'
       };
     }
 
-    if (role === 'admin' || author.includes('admin') || author.includes('supervisor')) {
+    // 5. Admin / Supervisor Note (Persistent Sky Blue)
+    const isAdminNote = 
+      role === 'admin' || 
+      author.includes('admin') || 
+      author.includes('supervisor') ||
+      id.includes('admin');
+
+    if (isAdminNote) {
       return {
-        cardClass: 'bg-sky-50/70 border-sky-200',
-        dotClass: 'bg-sky-500',
-        badgeClass: 'bg-sky-100 text-sky-800 border-sky-300',
-        label: 'Admin',
-        authorClass: 'text-sky-950 font-bold',
-        textClass: 'text-sky-900'
+        cardClass: 'bg-sky-50/80 border-sky-300/80',
+        squircleClass: 'bg-sky-100 text-sky-800 border-sky-200',
+        badgeClass: 'bg-sky-100 text-sky-800 border-sky-300 font-bold',
+        label: 'Supervisor',
+        icon: Sparkles,
+        type: 'notes'
       };
     }
 
+    // 6. Default Staff Note (Neutral Slate Gray)
     return {
-      cardClass: 'bg-slate-50 border-slate-100',
-      dotClass: 'bg-[#176e57]',
-      badgeClass: 'bg-slate-200/70 text-slate-700 border-slate-200',
-      label: 'Staff',
-      authorClass: 'text-slate-800 font-bold',
-      textClass: 'text-slate-600'
+      cardClass: 'bg-slate-50/90 border-slate-200/80',
+      squircleClass: 'bg-slate-200/70 text-slate-700 border-slate-200',
+      badgeClass: 'bg-slate-200/70 text-slate-700 border-slate-300 font-semibold',
+      label: 'Staff Note',
+      icon: MessageSquare,
+      type: 'notes'
     };
   };
+
+  const filteredLogs = useMemo(() => {
+    return logs.filter((log) => {
+      const style = getNoteStyle(log);
+      return logCategoryFilter === 'all' || style.type === logCategoryFilter;
+    });
+  }, [logs, logCategoryFilter]);
 
   const handleAcceptRequest = async (requestId) => {
     const staffName = user?.name || 'Staff';
@@ -186,8 +312,11 @@ export default function Dashboard({
   const handleConfirmDelete = async () => {
     if (!itemToDelete) return;
 
-    if (itemToDelete.type === 'request') {
-      const requestId = itemToDelete.id;
+    const targetItem = { ...itemToDelete };
+    setItemToDelete(null);
+
+    if (targetItem.type === 'request') {
+      const requestId = targetItem.id;
       if (setTeacherRequests) {
         setTeacherRequests((prev) => prev.filter((r) => r.id !== requestId));
       }
@@ -196,8 +325,8 @@ export default function Dashboard({
       } catch (err) {
         console.error('Failed to delete request:', err);
       }
-    } else if (itemToDelete.type === 'log') {
-      const logId = itemToDelete.id;
+    } else if (targetItem.type === 'log') {
+      const logId = targetItem.id;
       if (setLogs) {
         setLogs((prev) => {
           const next = prev.filter((l) => l.id !== logId);
@@ -215,8 +344,6 @@ export default function Dashboard({
         console.error('Failed to delete note:', err);
       }
     }
-
-    setItemToDelete(null);
   };
 
   const handlePostShiftNote = async (e) => {
@@ -228,9 +355,11 @@ export default function Dashboard({
     const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const authorRole = isAdmin ? 'admin' : (user?.role || 'staff');
     const authorName = user?.name || (isAdmin ? 'Facilities Supervisor' : 'Staff');
+    
+    const newId = `log-${authorRole === 'admin' ? 'admin-' : ''}${Date.now()}`;
 
     const newLogItem = {
-      id: `log-${Date.now()}`,
+      id: newId,
       created_at: new Date().toISOString(),
       time: now,
       author: authorName,
@@ -238,13 +367,18 @@ export default function Dashboard({
       role: authorRole
     };
 
+    if (!animationsDisabled) {
+      setRecentlyAddedId(newId);
+      setTimeout(() => setRecentlyAddedId(null), 1000);
+    }
+
     if (setLogs) {
-      setLogs((prev) => [newLogItem, ...prev]);
+      setLogs((prev) => [newLogItem, ...prev.filter((l) => l.id !== newId)]);
     }
 
     try {
       const stored = JSON.parse(localStorage.getItem('sjc_cached_logs') || '[]');
-      const updated = [newLogItem, ...stored.filter((l) => l.id !== newLogItem.id)];
+      const updated = [newLogItem, ...stored.filter((l) => l.id !== newId)];
       localStorage.setItem('sjc_cached_logs', JSON.stringify(updated));
       window.dispatchEvent(new CustomEvent('sjc_log_created', { detail: newLogItem }));
     } catch (localErr) {
@@ -254,20 +388,30 @@ export default function Dashboard({
     setShiftNoteInput('');
 
     try {
-      const { error } = await supabase.from('logs').insert([newLogItem]);
-      if (error) {
-        console.warn('Database note insert notice, local sync preserved:', error.message);
-      }
+      await supabase.from('logs').insert([{
+        id: newId,
+        time: now,
+        author: authorName,
+        text: trimmedNote
+      }]);
     } catch (err) {
-      console.error('Failed to post shift note to database:', err);
+      console.warn('Log insert notice:', err);
     } finally {
       setIsSubmittingNote(false);
     }
   };
 
+  const filterLabels = {
+    all: 'All',
+    rooms: 'Rooms',
+    supplies: 'Inventory',
+    notes: 'Staff Notes'
+  };
+
   return (
     <div className={`p-4 space-y-4 pb-24 ${isPcMode ? 'max-w-5xl mx-auto' : 'max-w-md mx-auto'}`}>
       
+      {/* Keyframes */}
       <style>{`
         @keyframes dashTopIn {
           0% {
@@ -276,7 +420,7 @@ export default function Dashboard({
           }
           100% {
             opacity: 1;
-            transform: translate3d(0, 0, 0) scale(1);
+            transform: translate3d(0, 0, 0);
           }
         }
 
@@ -287,7 +431,7 @@ export default function Dashboard({
           }
           100% {
             opacity: 1;
-            transform: translate3d(0, 0, 0) scale(1);
+            transform: translate3d(0, 0, 0);
           }
         }
 
@@ -298,7 +442,7 @@ export default function Dashboard({
           }
           100% {
             opacity: 1;
-            transform: translate3d(0, 0, 0) scale(1);
+            transform: translate3d(0, 0, 0);
           }
         }
 
@@ -309,7 +453,18 @@ export default function Dashboard({
           }
           100% {
             opacity: 1;
-            transform: translate3d(0, 0, 0) scale(1);
+            transform: translate3d(0, 0, 0);
+          }
+        }
+
+        @keyframes appleNoteSmoothIn {
+          0% {
+            opacity: 0;
+            transform: translate3d(0, 6px, 0);
+          }
+          100% {
+            opacity: 1;
+            transform: translate3d(0, 0, 0);
           }
         }
 
@@ -338,21 +493,34 @@ export default function Dashboard({
           will-change: transform, opacity;
         }
 
+        .anim-new-post {
+          animation: appleNoteSmoothIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) both;
+          will-change: transform, opacity;
+        }
+
         .disable-animations .anim-top,
         .disable-animations .anim-left,
         .disable-animations .anim-right,
         .disable-animations .anim-left-2,
         .disable-animations .anim-bottom-1,
-        .disable-animations .anim-bottom-2 {
+        .disable-animations .anim-bottom-2,
+        .disable-animations .anim-new-post {
           animation: none !important;
           transform: none !important;
           opacity: 1 !important;
+        }
+
+        .apple-notification-pill {
+          transition: border-color 0.15s ease, background-color 0.15s ease;
+        }
+        .apple-notification-pill:hover {
+          filter: brightness(0.985);
         }
       `}</style>
 
       <div className={isPcMode ? 'grid grid-cols-12 gap-5 items-start' : 'space-y-4'}>
         
-        {/* LEFT COLUMN (In PC Mode) / STACK TOP (In Mobile Mode) */}
+        {/* LEFT COLUMN */}
         <div className={isPcMode ? 'col-span-7 space-y-4' : 'space-y-4'}>
           
           {/* Card 1: Overall Sanitation Status */}
@@ -366,15 +534,20 @@ export default function Dashboard({
                   Daily Classroom Inspection
                 </h2>
               </div>
-              <span className="text-lg font-bold text-[#176e57]">
+              <span className={`text-lg font-bold text-[#176e57] font-mono transition-opacity duration-300 ${
+                animateProgress ? 'opacity-100' : 'opacity-40'
+              }`}>
                 {cleanPercentage}%
               </span>
             </div>
 
             <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
               <div
-                className="h-full bg-[#176e57] rounded-full transition-all duration-500 ease-out"
-                style={{ width: `${cleanPercentage}%` }}
+                className="h-full bg-[#176e57] rounded-full"
+                style={{
+                  width: animateProgress ? `${cleanPercentage}%` : '0%',
+                  transition: 'width 1.1s cubic-bezier(0.16, 1, 0.3, 1)'
+                }}
               />
             </div>
 
@@ -425,11 +598,11 @@ export default function Dashboard({
                   <span className="text-emerald-700">Stocked</span>
                 )}
               </div>
-              <p className="text-[10px] text-slate-500 mt-0.5">{supplies.length} items tracked</p>
+              <p className="text-[10px] text-slate-500 mt-0.5">{effectiveSupplies.length} items tracked</p>
             </div>
           </div>
 
-          {/* Card 4: Campus Buildings Radial Progress Ring Widgets */}
+          {/* Card 4: Campus Buildings Radial Ring Widgets */}
           <div className="bg-white rounded-2xl p-4 shadow-[0_2px_8px_rgba(0,0,0,0.04)] border border-slate-100 space-y-3 anim-left-2">
             <div className="flex items-center justify-between border-b border-slate-100 pb-2">
               <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wide flex items-center gap-1.5">
@@ -448,9 +621,8 @@ export default function Dashboard({
               </button>
             </div>
 
-            {/* 3 Circular Ring Progression Cards */}
             <div className="grid grid-cols-3 gap-2.5 pt-0.5">
-              {CAMPUS_BUILDINGS.map((bldg) => {
+              {CAMPUS_BUILDINGS.map((bldg, bIdx) => {
                 const bldgRooms = rooms.filter(
                   (r) => (r.building || 'Dimasalang') === bldg.id
                 );
@@ -461,10 +633,10 @@ export default function Dashboard({
                 const percentage = total > 0 ? Math.round((cleaned / total) * 100) : 0;
                 const isAllDone = total > 0 && cleaned === total;
 
-                // SVG Circular Progress Ring calculations (Radius 17 = ~106.8 perimeter)
                 const radius = 17;
                 const circumference = 2 * Math.PI * radius;
-                const strokeDashoffset = circumference - (percentage / 100) * circumference;
+                const targetOffset = circumference - (percentage / 100) * circumference;
+                const animatedOffset = animateProgress ? targetOffset : circumference;
 
                 return (
                   <button
@@ -476,10 +648,8 @@ export default function Dashboard({
                         : 'bg-white border-slate-200/80 hover:border-[#176e57]/40 shadow-2xs'
                     }`}
                   >
-                    {/* Top: SVG Radial Progression Gauge */}
                     <div className="relative w-12 h-12 flex items-center justify-center my-0.5">
                       <svg className="w-full h-full -rotate-90 transform" viewBox="0 0 44 44">
-                        {/* Background Ring Track (Shows what is left to finish) */}
                         <circle
                           cx="22"
                           cy="22"
@@ -488,7 +658,6 @@ export default function Dashboard({
                           stroke={isAllDone ? '#d1fae5' : '#f1f5f9'}
                           strokeWidth="3.5"
                         />
-                        {/* Active Progress Arc */}
                         <circle
                           cx="22"
                           cy="22"
@@ -497,32 +666,39 @@ export default function Dashboard({
                           stroke={isAllDone ? '#10b981' : '#176e57'}
                           strokeWidth="3.5"
                           strokeDasharray={circumference}
-                          strokeDashoffset={strokeDashoffset}
+                          strokeDashoffset={animatedOffset}
                           strokeLinecap="round"
-                          className="transition-all duration-700 ease-out"
+                          style={{
+                            transition: 'stroke-dashoffset 1.15s cubic-bezier(0.16, 1, 0.3, 1)',
+                            transitionDelay: `${bIdx * 100}ms`
+                          }}
                         />
                       </svg>
 
-                      {/* Inside Ring Indicator */}
                       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                         {isAllDone ? (
-                          <Check className="w-4 h-4 text-emerald-600 stroke-[3] animate-pop" />
+                          <Check 
+                            className={`w-4 h-4 text-emerald-600 stroke-[3] transition-all duration-300 ${
+                              animateProgress ? 'opacity-100 scale-100' : 'opacity-0 scale-50'
+                            }`}
+                            style={{ transitionDelay: `${bIdx * 100 + 400}ms` }}
+                          />
                         ) : (
-                          <span className={`text-[10px] font-extrabold font-mono ${
-                            percentage > 0 ? 'text-[#176e57]' : 'text-slate-400'
-                          }`}>
+                          <span 
+                            className={`text-[10px] font-extrabold font-mono transition-opacity duration-300 ${
+                              percentage > 0 ? 'text-[#176e57]' : 'text-slate-400'
+                            } ${animateProgress ? 'opacity-100' : 'opacity-40'}`}
+                          >
                             {percentage}%
                           </span>
                         )}
                       </div>
                     </div>
 
-                    {/* Middle: Building Name */}
                     <h4 className="text-xs font-extrabold text-slate-800 leading-tight mt-1.5 truncate max-w-full">
                       {bldg.name}
                     </h4>
 
-                    {/* Bottom: Room Ratio Footnote */}
                     <p className="text-[10px] text-slate-400 font-medium font-mono mt-0.5">
                       {cleaned}/{total} checked
                     </p>
@@ -534,7 +710,7 @@ export default function Dashboard({
 
         </div>
 
-        {/* RIGHT COLUMN (In PC Mode) / STACK BOTTOM (In Mobile Mode) */}
+        {/* RIGHT COLUMN */}
         <div className={isPcMode ? 'col-span-5 space-y-4' : 'space-y-4'}>
           
           {/* Card 3: Teacher Requests */}
@@ -693,84 +869,156 @@ export default function Dashboard({
             </div>
           </div>
 
-          {/* Card 5: Notes and Logs */}
+          {/* ============================================================== */}
+          {/* 📬 CARD 5: NOTES AND LOGS                                       */}
+          {/* ============================================================== */}
           <div className="bg-white rounded-2xl p-4 shadow-[0_2px_8px_rgba(0,0,0,0.04)] border border-slate-100 space-y-3 anim-bottom-2">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-              <div className="flex items-center gap-1.5">
-                <MessageSquare className="w-3.5 h-3.5 text-[#176e57]" />
+            
+            {/* Header: Title + Category Filter Dropdown */}
+            <div className="flex items-center justify-between border-b border-slate-100 pb-2.5 gap-2">
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded-xl bg-emerald-50 text-[#176e57] flex items-center justify-center font-bold flex-shrink-0">
+                  <MessageSquare className="w-3.5 h-3.5" />
+                </div>
                 <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wide">
                   Notes and Logs
                 </h3>
               </div>
+
+              {/* Minimal Popover Filter */}
+              <div className="relative" ref={filterDropdownRef}>
+                <button
+                  type="button"
+                  onClick={() => setShowFilterDropdown(!showFilterDropdown)}
+                  className={`flex items-center gap-1 px-2.5 py-1 rounded-xl text-[10px] font-bold border transition active:scale-95 ${
+                    logCategoryFilter !== 'all'
+                      ? 'bg-emerald-50 text-[#176e57] border-emerald-300'
+                      : 'bg-slate-100/90 text-slate-600 border-slate-200/80 hover:bg-slate-200'
+                  }`}
+                  title="Filter categories"
+                >
+                  <Filter className="w-3 h-3 stroke-[2.2]" />
+                  <span>{filterLabels[logCategoryFilter]}</span>
+                  <ChevronDown className={`w-3 h-3 transition-transform duration-200 ${showFilterDropdown ? 'rotate-180' : ''}`} />
+                </button>
+
+                {showFilterDropdown && (
+                  <div className="absolute right-0 top-full mt-1.5 z-50 bg-white/95 backdrop-blur-sm border border-slate-200/90 rounded-2xl shadow-xl p-1.5 w-32 space-y-0.5 animate-dropdown text-xs">
+                    {[
+                      { id: 'all', label: 'All' },
+                      { id: 'rooms', label: 'Rooms' },
+                      { id: 'supplies', label: 'Inventory' },
+                      { id: 'notes', label: 'Staff Notes' }
+                    ].map((tab) => (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => {
+                          setLogCategoryFilter(tab.id);
+                          setShowFilterDropdown(false);
+                        }}
+                        className={`w-full text-left px-2.5 py-1.5 rounded-xl font-bold text-[11px] flex items-center justify-between transition ${
+                          logCategoryFilter === tab.id
+                            ? 'bg-[#176e57] text-white shadow-2xs'
+                            : 'text-slate-700 hover:bg-slate-100'
+                        }`}
+                      >
+                        <span>{tab.label}</span>
+                        {logCategoryFilter === tab.id && <Check className="w-3.5 h-3.5 stroke-[2.5]" />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
-            <form onSubmit={handlePostShiftNote} className="flex gap-2">
+            {/* Apple Messages Style Inline Post Bar */}
+            <form onSubmit={handlePostShiftNote} className="relative flex items-center">
               <input
                 type="text"
                 required
                 value={shiftNoteInput}
                 onChange={(e) => setShiftNoteInput(e.target.value)}
-                placeholder="Write shift note or incident report..."
-                className="flex-1 px-3 py-2 text-xs border border-slate-200 rounded-xl focus:outline-none focus:border-[#176e57] focus:ring-1 focus:ring-[#176e57] bg-slate-50 transition"
+                placeholder="Share an update with staff on duty..."
+                className="w-full pl-3.5 pr-10 py-2.5 text-xs bg-slate-50 border border-slate-200/90 rounded-2xl text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#176e57] focus:ring-1 focus:ring-[#176e57] transition"
               />
               <button
                 type="submit"
                 disabled={isSubmittingNote || !shiftNoteInput.trim()}
-                className="bg-[#176e57] hover:bg-[#135c49] active:scale-95 text-white px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1 transition shadow-sm disabled:opacity-50"
+                title="Send note"
+                className="absolute right-1.5 w-7 h-7 rounded-xl bg-[#176e57] hover:bg-[#135c49] active:scale-90 text-white flex items-center justify-center transition shadow-2xs disabled:opacity-40"
               >
-                <Send className="w-3.5 h-3.5" />
-                <span>Post</span>
+                <ArrowUp className="w-4 h-4 stroke-[2.6]" />
               </button>
             </form>
 
-            <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-              {logs && logs.length > 0 ? (
-                logs.map((log) => {
+            {/* Notification List Container */}
+            <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+              {filteredLogs && filteredLogs.length > 0 ? (
+                filteredLogs.map((log) => {
                   const style = getNoteStyle(log);
+                  const IconComponent = style.icon;
                   const canDeleteNote = isAdmin || (user?.name && log.author === user.name);
+                  const relativeTime = getRelativeTime(log.created_at, log.time);
+                  const isJustAdded = recentlyAddedId === log.id;
 
                   return (
                     <div
                       key={log.id}
-                      className={`p-2.5 rounded-xl border text-xs space-y-1 animate-pop relative group transition-colors ${style.cardClass}`}
+                      className={`p-3 rounded-2xl border text-xs space-y-1.5 apple-notification-pill select-none relative group transition-colors ${style.cardClass} ${
+                        isJustAdded ? 'anim-new-post' : ''
+                      }`}
                     >
-                      <div className="flex items-center justify-between">
-                        <span className={`font-bold text-[11px] flex items-center gap-1.5 ${style.authorClass}`}>
-                          <span className={`w-2 h-2 rounded-full ${style.dotClass}`} />
-                          <span>{log.author}</span>
-                          <span className={`text-[9px] font-semibold px-1.5 py-0.2 rounded border ${style.badgeClass}`}>
+                      {/* Top Header: Colored Squircle Icon + Author + Relative Time */}
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className={`w-6 h-6 rounded-xl border flex items-center justify-center flex-shrink-0 shadow-2xs ${style.squircleClass}`}>
+                            <IconComponent className="w-3.5 h-3.5 stroke-[2.4]" />
+                          </div>
+                          <span className="font-extrabold text-[11px] text-slate-900 truncate">
+                            {log.author}
+                          </span>
+                          <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded-md border flex-shrink-0 ${style.badgeClass}`}>
                             {style.label}
                           </span>
-                        </span>
+                        </div>
                         
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] text-slate-400 font-mono flex items-center gap-1">
-                            <Clock className="w-3.5 h-3.5 text-slate-400" />
-                            {log.time}
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          <span className="text-[10px] text-slate-400 font-mono font-medium">
+                            {relativeTime}
                           </span>
 
                           {canDeleteNote && (
                             <button
                               type="button"
                               onClick={() => promptDeleteNote(log)}
-                              title="Delete note permanently"
-                              className="text-slate-400 hover:text-rose-600 active:scale-90 transition p-0.5"
+                              title="Delete note"
+                              className="text-slate-400 hover:text-rose-600 active:scale-90 transition p-1 hover:bg-white/80 rounded-lg"
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
+                              <Trash2 className="w-3 h-3" />
                             </button>
                           )}
                         </div>
                       </div>
-                      <p className={`text-[11px] pl-3.5 leading-relaxed ${style.textClass}`}>
+
+                      {/* Content Body */}
+                      <p className="text-[11px] text-slate-800 pl-8 leading-relaxed font-normal">
                         {log.text}
                       </p>
                     </div>
                   );
                 })
               ) : (
-                <p className="text-xs text-slate-400 text-center py-3">
-                  No shift notes yet today.
-                </p>
+                <div className="text-center py-8 space-y-1">
+                  <p className="text-xs text-slate-400 font-medium">
+                    {logCategoryFilter === 'all' 
+                      ? 'No activity recorded yet today.' 
+                      : `No updates found for "${filterLabels[logCategoryFilter]}".`}
+                  </p>
+                  <p className="text-[10px] text-slate-300">
+                    Cleanings, draws, and shift notes will stream in automatically.
+                  </p>
+                </div>
               )}
             </div>
           </div>
@@ -794,7 +1042,7 @@ export default function Dashboard({
         onClose={() => setShowTeacherModal(false)}
       />
 
-      {/* Custom In-App Delete Confirmation Modal */}
+      {/* Seamless In-App Delete Confirmation Modal */}
       {itemToDelete && typeof document !== 'undefined' && createPortal(
         <div 
           className="fixed inset-0 z-[300] bg-black/60 flex items-center justify-center p-4 animate-fade-backdrop text-slate-800 select-none"

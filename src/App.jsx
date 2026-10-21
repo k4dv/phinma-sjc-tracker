@@ -150,7 +150,15 @@ export default function App() {
     }
   });
 
-  const [supplies, setSupplies] = useState(INITIAL_SUPPLIES);
+  // Cached locally on frame 1 to eliminate the "Stocked" -> "1 Low" flicker on refresh
+  const [supplies, setSupplies] = useState(() => {
+    try {
+      const cached = localStorage.getItem('sjc_cached_supplies');
+      return cached ? JSON.parse(cached) : INITIAL_SUPPLIES;
+    } catch {
+      return INITIAL_SUPPLIES;
+    }
+  });
   
   const [logs, setLogs] = useState(() => {
     try {
@@ -242,6 +250,9 @@ export default function App() {
         if (rawSupplies?.length) {
           const unpackedSupplies = rawSupplies.map(unpackSupplyItem);
           setSupplies(unpackedSupplies);
+          try {
+            localStorage.setItem('sjc_cached_supplies', JSON.stringify(unpackedSupplies));
+          } catch (_) {}
 
           const photoMap = {};
           const stackMap = {};
@@ -293,10 +304,20 @@ export default function App() {
           });
         }
 
-        if (logsRes.data?.length) {
+if (logsRes.data?.length) {
           const visibleLogs = logsRes.data.filter(isVisibleLog);
-          setLogs(visibleLogs);
-          localStorage.setItem('sjc_cached_logs', JSON.stringify(visibleLogs));
+          setLogs((prev) => {
+            const map = new Map();
+            // Preserve local notes
+            prev.forEach((l) => map.set(l.id, l));
+            // Merge remote database rows
+            visibleLogs.forEach((l) => map.set(l.id, l));
+            const merged = Array.from(map.values());
+            try {
+              localStorage.setItem('sjc_cached_logs', JSON.stringify(merged));
+            } catch (_) {}
+            return merged;
+          });
         }
 
         if (reqsRes.data?.length) {
@@ -400,17 +421,25 @@ export default function App() {
               localStorage.setItem('sjc_supplies_usage_history', JSON.stringify(cached));
             } catch (_) {}
           }
-          setSupplies((prev) =>
-            prev.map((s) => (s.id === unpacked.id ? { ...s, ...unpacked, quantity: Number(unpacked.quantity) } : s))
-          );
+          setSupplies((prev) => {
+            const next = prev.map((s) => (s.id === unpacked.id ? { ...s, ...unpacked, quantity: Number(unpacked.quantity) } : s));
+            try { localStorage.setItem('sjc_cached_supplies', JSON.stringify(next)); } catch (_) {}
+            return next;
+          });
         } else if (payload.eventType === 'INSERT' && payload.new) {
           const unpacked = unpackSupplyItem(payload.new);
           setSupplies((prev) => {
             if (prev.some((s) => s.id === unpacked.id || s.name === unpacked.name)) return prev;
-            return [...prev, unpacked];
+            const next = [...prev, unpacked];
+            try { localStorage.setItem('sjc_cached_supplies', JSON.stringify(next)); } catch (_) {}
+            return next;
           });
         } else if (payload.eventType === 'DELETE' && payload.old) {
-          setSupplies((prev) => prev.filter((s) => s.id !== payload.old.id));
+          setSupplies((prev) => {
+            const next = prev.filter((s) => s.id !== payload.old.id);
+            try { localStorage.setItem('sjc_cached_supplies', JSON.stringify(next)); } catch (_) {}
+            return next;
+          });
         }
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'assignments' }, async () => {
@@ -627,7 +656,7 @@ export default function App() {
 
   return (
     <div 
-      className={`min-h-screen bg-[#f8fafc] text-slate-800 flex flex-col relative font-sans transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+      className={`min-h-screen bg-[#f8fafc] text-slate-800 flex flex-col relative font-sans transition-[max-width] duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] ${
         isWide 
           ? 'w-full min-w-[1024px] overflow-x-auto' 
           : 'w-full max-w-md mx-auto shadow-2xl overflow-x-hidden'

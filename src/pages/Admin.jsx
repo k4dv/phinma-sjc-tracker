@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { supabase } from '../data/supabaseClient';
 import { api } from '../services/api';
 import { sanitizeUser } from '../utils/security';
-import * as XLSX from 'xlsx';
+import XLSX from 'xlsx-js-style';
 import { 
   Megaphone, 
   Users, 
@@ -81,7 +81,29 @@ export default function Admin({
   const [selectedUserToDelete, setSelectedUserToDelete] = useState('');
   const [isDeletingAccount, setIsDeletingAccount] = useState(false);
 
-  const animationsDisabled = localStorage.getItem('sjc_animations_disabled') === 'true';
+  // Reactive state for Profile Settings Animation Toggle
+  const [animationsDisabled, setAnimationsDisabled] = useState(() => {
+    try {
+      return localStorage.getItem('sjc_animations_disabled') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    const handleAnimToggle = () => {
+      try {
+        setAnimationsDisabled(localStorage.getItem('sjc_animations_disabled') === 'true');
+      } catch (_) {}
+    };
+
+    window.addEventListener('storage', handleAnimToggle);
+    window.addEventListener('sjc_animation_preference_changed', handleAnimToggle);
+    return () => {
+      window.removeEventListener('storage', handleAnimToggle);
+      window.removeEventListener('sjc_animation_preference_changed', handleAnimToggle);
+    };
+  }, []);
 
   const [noticeText, setNoticeText] = useState(broadcast.message || '');
   const [isUpdatingNotice, setIsUpdatingNotice] = useState(false);
@@ -346,7 +368,6 @@ export default function Admin({
     }
   };
 
-  // Allows deleting both Staff and secondary Admin accounts (e.g. Stitch / 006)
   const handleDeleteAccount = async () => {
     if (!selectedUserToDelete) return;
     setIsDeletingAccount(true);
@@ -519,43 +540,411 @@ export default function Admin({
     showToast('Shift handover logs cleared.');
   };
 
+  // 📊 EXECUTIVE STYLED EXCEL EXPORT (MATCHES SUPPLIES AESTHETIC EXACTLY)
   const handleExportExcel = () => {
     try {
-      const roomRows = rooms.map((r) => ({
-        Building: r.building || 'Dimasalang',
-        'Room #': r.id,
-        Floor: `Floor ${r.floor}`,
-        Status: r.status ? r.status.toUpperCase() : 'PENDING',
-        'Staff Assigned': r.staff || 'None',
-        'Last Cleaned': r.lastCleaned || 'N/A',
-        'AC Verified Off': r.acChecked ? 'YES' : 'NO',
-        'Lights Off': r.lightsChecked ? 'YES' : 'NO',
-        'Door Locked': r.doorChecked ? 'YES' : 'NO',
-        'Class In Session': r.hasStudents ? 'YES' : 'NO',
-        Notes: r.notes || r.recleanReason || ''
-      }));
+      const PALETTE = {
+        campusGreen: '176E57',
+        titleSubBg: '0F4C3A',
+        titleSubText: 'A7F3D0',
+        white: 'FFFFFF',
+        slateDark: '1E293B',
+        slateLight: 'F8FAFC',
+        borderSoft: 'E2E8F0',
 
-      const supplyRows = supplies.map((s) => ({
-        Item: s.name,
-        Category: s.category || 'General',
-        Quantity: s.quantity,
-        Unit: s.unit,
-        Threshold: s.threshold,
-        'Stock Health': s.quantity <= s.threshold ? 'LOW STOCK' : 'OK'
-      }));
+        // Inspection Status Badges
+        cleanedFill: 'D1FAE5',
+        cleanedText: '065F46',
+        inProgressFill: 'E0F2FE',
+        inProgressText: '075985',
+        pendingFill: 'FEF3C7',
+        pendingText: '92400E',
+        recleanFill: 'FEE2E2',
+        recleanText: '991B1B',
+
+        // Building Section Banners
+        dimasalangFill: 'CCFBF1',
+        dimasalangText: '115E59',
+        silangFill: 'E0F2FE',
+        silangText: '075985',
+        phinmaFill: 'F3E8FF',
+        phinmaText: '581C87',
+        generalFill: 'F1F5F9',
+        generalText: '334155'
+      };
+
+      const thinBorder = {
+        top: { style: 'thin', color: { rgb: PALETTE.borderSoft } },
+        bottom: { style: 'thin', color: { rgb: PALETTE.borderSoft } },
+        left: { style: 'thin', color: { rgb: PALETTE.borderSoft } },
+        right: { style: 'thin', color: { rgb: PALETTE.borderSoft } }
+      };
+
+      // --- SHEET 1: CAMPUS CLASSROOM INSPECTION AUDIT ---
+      const buildingOrder = ['Dimasalang', 'Silang', 'Phinma'];
+      const groupedRooms = {};
+      buildingOrder.forEach((b) => { groupedRooms[b] = []; });
+
+      rooms.forEach((r) => {
+        const b = r.building || 'Dimasalang';
+        if (!groupedRooms[b]) groupedRooms[b] = [];
+        groupedRooms[b].push(r);
+      });
+
+      const rows = [];
+      const cellStyles = {};
+      const merges = [];
+
+      const setCellStyle = (r, c, style) => {
+        const cellRef = XLSX.utils.encode_cell({ r, c });
+        cellStyles[cellRef] = style;
+      };
+
+      // Header Banner (Title)
+      rows.push(['PHINMA SAINT JUDE COLLEGE — CAMPUS FACILITIES & SHIFT INSPECTION AUDIT', '', '', '', '', '', '', '', '']);
+      merges.push({ s: { r: 0, c: 0 }, e: { r: 0, c: 8 } });
+      for (let c = 0; c <= 8; c++) {
+        setCellStyle(0, c, {
+          fill: { fgColor: { rgb: PALETTE.campusGreen } },
+          font: { name: 'Calibri', sz: 13, bold: true, color: { rgb: PALETTE.white } },
+          alignment: { vertical: 'center', horizontal: 'left', indent: 1 }
+        });
+      }
+
+      // Metadata Banner
+      const now = new Date();
+      const dateFormatted = now.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+      const timeFormatted = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      rows.push([`Audit Date: ${dateFormatted} at ${timeFormatted} | Campus: Dimasalang, Silang, Phinma | Auditor: Facilities Administration`, '', '', '', '', '', '', '', '']);
+      merges.push({ s: { r: 1, c: 0 }, e: { r: 1, c: 8 } });
+      for (let c = 0; c <= 8; c++) {
+        setCellStyle(1, c, {
+          fill: { fgColor: { rgb: PALETTE.titleSubBg } },
+          font: { name: 'Calibri', sz: 9, italic: true, color: { rgb: PALETTE.titleSubText } },
+          alignment: { vertical: 'center', horizontal: 'left', indent: 1 }
+        });
+      }
+
+      // Spacer
+      rows.push(['', '', '', '', '', '', '', '', '']);
+
+      // Column Headers
+      rows.push([
+        'BUILDING',
+        'ROOM #',
+        'FLOOR',
+        'INSPECTION STATUS',
+        'ASSIGNED STAFF',
+        'LAST VERIFIED',
+        'FACILITY CONTROLS (AC / LIGHTS / LOCK)',
+        'ACTIVE SESSION',
+        'HANDOVER / INCIDENT NOTES'
+      ]);
+      for (let c = 0; c <= 8; c++) {
+        setCellStyle(3, c, {
+          fill: { fgColor: { rgb: PALETTE.slateDark } },
+          font: { name: 'Calibri', sz: 10, bold: true, color: { rgb: PALETTE.white } },
+          alignment: { vertical: 'center', horizontal: (c === 1 || c === 4 || c === 8) ? 'left' : 'center' },
+          border: thinBorder
+        });
+      }
+
+      let currentRow = 4;
+
+      buildingOrder.forEach((bldg) => {
+        const bldgRooms = groupedRooms[bldg];
+        if (!bldgRooms || bldgRooms.length === 0) return;
+
+        let bannerBg = PALETTE.generalFill;
+        let bannerTxt = PALETTE.generalText;
+        let bldgLabel = `🏢 ${bldg.toUpperCase()} BUILDING`;
+
+        if (bldg === 'Dimasalang') {
+          bannerBg = PALETTE.dimasalangFill;
+          bannerTxt = PALETTE.dimasalangText;
+          bldgLabel = '🏛️ DIMASALANG BUILDING (Main Academic Wing)';
+        } else if (bldg === 'Silang') {
+          bannerBg = PALETTE.silangFill;
+          bannerTxt = PALETTE.silangText;
+          bldgLabel = '🏫 SILANG BUILDING (Science & Laboratory Wing)';
+        } else if (bldg === 'Phinma') {
+          bannerBg = PALETTE.phinmaFill;
+          bannerTxt = PALETTE.phinmaText;
+          bldgLabel = '🏢 PHINMA BUILDING (Allied Health & Nursing Wing)';
+        }
+
+        // Section Banner Row
+        rows.push([bldgLabel, '', '', '', '', '', '', '', `${bldgRooms.length} rooms audited`]);
+        merges.push({ s: { r: currentRow, c: 0 }, e: { r: currentRow, c: 7 } });
+
+        for (let c = 0; c <= 7; c++) {
+          setCellStyle(currentRow, c, {
+            fill: { fgColor: { rgb: bannerBg } },
+            font: { name: 'Calibri', sz: 10, bold: true, color: { rgb: bannerTxt } },
+            alignment: { vertical: 'center', horizontal: 'left', indent: 1 },
+            border: thinBorder
+          });
+        }
+        setCellStyle(currentRow, 8, {
+          fill: { fgColor: { rgb: bannerBg } },
+          font: { name: 'Calibri', sz: 9, italic: true, color: { rgb: bannerTxt } },
+          alignment: { vertical: 'center', horizontal: 'center' },
+          border: thinBorder
+        });
+        currentRow++;
+
+        // Data Rows
+        bldgRooms.forEach((rm, rIdx) => {
+          const rawStatus = (rm.status || 'pending').toLowerCase();
+          let statusText = 'PENDING';
+          let statusBg = PALETTE.pendingFill;
+          let statusFg = PALETTE.pendingText;
+
+          if (rawStatus === 'cleaned' || rawStatus === 'completed') {
+            statusText = 'CLEANED';
+            statusBg = PALETTE.cleanedFill;
+            statusFg = PALETTE.cleanedText;
+          } else if (rawStatus === 'in_progress') {
+            statusText = 'IN PROGRESS';
+            statusBg = PALETTE.inProgressFill;
+            statusFg = PALETTE.inProgressText;
+          } else if (rawStatus === 'reclean' || rm.recleanReason) {
+            statusText = 'NEEDS RECLEAN';
+            statusBg = PALETTE.recleanFill;
+            statusFg = PALETTE.recleanText;
+          }
+
+          const controlsSummary = `AC: ${rm.acChecked ? 'OFF' : 'ON'} | LIGHTS: ${rm.lightsChecked ? 'OFF' : 'ON'} | LOCKED: ${rm.doorChecked ? 'YES' : 'NO'}`;
+          const occupancy = rm.hasStudents ? 'CLASS IN SESSION' : 'ROOM VACANT';
+          const zebraBg = rIdx % 2 === 1 ? PALETTE.slateLight : PALETTE.white;
+
+          rows.push([
+            bldg,
+            `Room ${rm.id}`,
+            `Floor ${rm.floor}`,
+            statusText,
+            rm.staff || 'Unassigned',
+            rm.lastCleaned || 'Pending Verification',
+            controlsSummary,
+            occupancy,
+            rm.notes || rm.recleanReason || ''
+          ]);
+
+          // Building
+          setCellStyle(currentRow, 0, {
+            fill: { fgColor: { rgb: zebraBg } },
+            font: { name: 'Calibri', sz: 10, color: { rgb: '475569' } },
+            alignment: { vertical: 'center', horizontal: 'center' },
+            border: thinBorder
+          });
+
+          // Room #
+          setCellStyle(currentRow, 1, {
+            fill: { fgColor: { rgb: zebraBg } },
+            font: { name: 'Calibri', sz: 10, bold: true, color: { rgb: '0F172A' } },
+            alignment: { vertical: 'center', horizontal: 'left', indent: 1 },
+            border: thinBorder
+          });
+
+          // Floor
+          setCellStyle(currentRow, 2, {
+            fill: { fgColor: { rgb: zebraBg } },
+            font: { name: 'Calibri', sz: 9, color: { rgb: '64748B' } },
+            alignment: { vertical: 'center', horizontal: 'center' },
+            border: thinBorder
+          });
+
+          // Status Badge
+          setCellStyle(currentRow, 3, {
+            fill: { fgColor: { rgb: statusBg } },
+            font: { name: 'Calibri', sz: 9, bold: true, color: { rgb: statusFg } },
+            alignment: { vertical: 'center', horizontal: 'center' },
+            border: thinBorder
+          });
+
+          // Staff Assigned
+          setCellStyle(currentRow, 4, {
+            fill: { fgColor: { rgb: zebraBg } },
+            font: { name: 'Calibri', sz: 10, bold: rm.staff && rm.staff !== 'Unassigned', color: { rgb: '0F172A' } },
+            alignment: { vertical: 'center', horizontal: 'left', indent: 1 },
+            border: thinBorder
+          });
+
+          // Last Verified
+          setCellStyle(currentRow, 5, {
+            fill: { fgColor: { rgb: zebraBg } },
+            font: { name: 'Calibri', sz: 9, color: { rgb: '64748B' } },
+            alignment: { vertical: 'center', horizontal: 'center' },
+            border: thinBorder
+          });
+
+          // Controls (AC / Lights / Locked)
+          setCellStyle(currentRow, 6, {
+            fill: { fgColor: { rgb: zebraBg } },
+            font: { name: 'Calibri', sz: 9, fontMono: true, color: { rgb: '334155' } },
+            alignment: { vertical: 'center', horizontal: 'center' },
+            border: thinBorder
+          });
+
+          // Occupancy Status
+          setCellStyle(currentRow, 7, {
+            fill: { fgColor: { rgb: rm.hasStudents ? 'FEF3C7' : zebraBg } },
+            font: { name: 'Calibri', sz: 9, bold: rm.hasStudents, color: { rgb: rm.hasStudents ? '92400E' : '64748B' } },
+            alignment: { vertical: 'center', horizontal: 'center' },
+            border: thinBorder
+          });
+
+          // Notes
+          setCellStyle(currentRow, 8, {
+            fill: { fgColor: { rgb: zebraBg } },
+            font: { name: 'Calibri', sz: 9, italic: true, color: { rgb: '475569' } },
+            alignment: { vertical: 'center', horizontal: 'left', indent: 1 },
+            border: thinBorder
+          });
+
+          currentRow++;
+        });
+
+        // Blank spacer between buildings
+        rows.push(['', '', '', '', '', '', '', '', '']);
+        currentRow++;
+      });
 
       const wb = XLSX.utils.book_new();
-      const wsRooms = XLSX.utils.json_to_sheet(roomRows);
-      const wsSupplies = XLSX.utils.json_to_sheet(supplyRows);
+      const wsRooms = XLSX.utils.aoa_to_sheet(rows);
 
-      XLSX.utils.book_append_sheet(wb, wsRooms, 'Campus Classroom Inspection');
-      XLSX.utils.book_append_sheet(wb, wsSupplies, 'Supplies Inventory');
+      wsRooms['!merges'] = merges;
+      wsRooms['!cols'] = [
+        { wch: 18 }, // Building
+        { wch: 16 }, // Room #
+        { wch: 12 }, // Floor
+        { wch: 18 }, // Status
+        { wch: 28 }, // Staff
+        { wch: 20 }, // Last Verified
+        { wch: 38 }, // Controls Summary
+        { wch: 20 }, // Occupancy
+        { wch: 34 }  // Notes
+      ];
+
+      wsRooms['!rows'] = [
+        { hpt: 28 }, // Title
+        { hpt: 18 }, // Meta
+        { hpt: 8  }, // Spacer
+        { hpt: 24 }  // Header
+      ];
+
+      Object.keys(cellStyles).forEach((k) => {
+        if (wsRooms[k]) wsRooms[k].s = cellStyles[k];
+      });
+
+      XLSX.utils.book_append_sheet(wb, wsRooms, 'Campus Classroom Audit');
+
+      // --- SHEET 2: CAMPUS SUPPLIES INVENTORY AUDIT ---
+      const supplyRows = [];
+      const supplyStyles = {};
+      const supplyMerges = [];
+
+      const setSupplyStyle = (r, c, style) => {
+        const cellRef = XLSX.utils.encode_cell({ r, c });
+        supplyStyles[cellRef] = style;
+      };
+
+      supplyRows.push(['PHINMA SAINT JUDE COLLEGE — CAMPUS STORAGE INVENTORY AUDIT', '', '', '', '', '', '']);
+      supplyMerges.push({ s: { r: 0, c: 0 }, e: { r: 0, c: 6 } });
+      for (let c = 0; c <= 6; c++) {
+        setSupplyStyle(0, c, {
+          fill: { fgColor: { rgb: PALETTE.campusGreen } },
+          font: { name: 'Calibri', sz: 12, bold: true, color: { rgb: PALETTE.white } },
+          alignment: { vertical: 'center', horizontal: 'left', indent: 1 }
+        });
+      }
+
+      supplyRows.push([`Inventory Generated: ${dateFormatted} at ${timeFormatted} | Facilities Storage`, '', '', '', '', '', '']);
+      supplyMerges.push({ s: { r: 1, c: 0 }, e: { r: 1, c: 6 } });
+      for (let c = 0; c <= 6; c++) {
+        setSupplyStyle(1, c, {
+          fill: { fgColor: { rgb: PALETTE.titleSubBg } },
+          font: { name: 'Calibri', sz: 9, italic: true, color: { rgb: PALETTE.titleSubText } },
+          alignment: { vertical: 'center', horizontal: 'left', indent: 1 }
+        });
+      }
+
+      supplyRows.push(['', '', '', '', '', '', '']);
+
+      supplyRows.push([
+        'CATEGORY',
+        'ITEM NAME',
+        'QUANTITY',
+        'UNIT',
+        'MIN THRESHOLD',
+        'STOCK HEALTH',
+        'SAFETY CLASSIFICATION'
+      ]);
+      for (let c = 0; c <= 6; c++) {
+        setSupplyStyle(3, c, {
+          fill: { fgColor: { rgb: PALETTE.slateDark } },
+          font: { name: 'Calibri', sz: 10, bold: true, color: { rgb: PALETTE.white } },
+          alignment: { vertical: 'center', horizontal: c === 1 ? 'left' : 'center' },
+          border: thinBorder
+        });
+      }
+
+      let sRow = 4;
+      supplies.forEach((sItem, sIdx) => {
+        const isLow = sItem.quantity <= sItem.threshold;
+        const isCritical = sItem.quantity <= 0;
+        const zebraBg = sIdx % 2 === 1 ? PALETTE.slateLight : PALETTE.white;
+
+        supplyRows.push([
+          sItem.category || 'General',
+          sItem.name,
+          sItem.quantity,
+          sItem.unit || 'pcs',
+          sItem.threshold || 1,
+          isCritical ? 'OUT OF STOCK' : isLow ? 'LOW STOCK' : 'OPTIMAL',
+          (sItem.category === 'Chemicals' || sItem.category === 'PPE') ? 'RESTRICTED / SAFETY' : 'GENERAL CAMPUS'
+        ]);
+
+        for (let c = 0; c <= 6; c++) {
+          setSupplyStyle(sRow, c, {
+            fill: { fgColor: { rgb: c === 5 ? (isCritical ? 'FEE2E2' : isLow ? 'FEF3C7' : 'D1FAE5') : zebraBg } },
+            font: { 
+              name: 'Calibri', 
+              sz: 9, 
+              bold: c === 1 || c === 5,
+              color: { rgb: c === 5 ? (isCritical ? '991B1B' : isLow ? '92400E' : '065F46') : '1E293B' } 
+            },
+            alignment: { vertical: 'center', horizontal: c === 1 ? 'left' : 'center' },
+            border: thinBorder
+          });
+        }
+        sRow++;
+      });
+
+      const wsSupplies = XLSX.utils.aoa_to_sheet(supplyRows);
+      wsSupplies['!merges'] = supplyMerges;
+      wsSupplies['!cols'] = [
+        { wch: 20 }, // Category
+        { wch: 32 }, // Item Name
+        { wch: 14 }, // Quantity
+        { wch: 12 }, // Unit
+        { wch: 16 }, // Min Threshold
+        { wch: 18 }, // Stock Health
+        { wch: 26 }  // Safety Classification
+      ];
+
+      Object.keys(supplyStyles).forEach((k) => {
+        if (wsSupplies[k]) wsSupplies[k].s = supplyStyles[k];
+      });
+
+      XLSX.utils.book_append_sheet(wb, wsSupplies, 'Supplies Stock Audit');
 
       const dateStr = new Date().toISOString().split('T')[0];
-      XLSX.writeFile(wb, `PHINMA_SJC_Campus_Report_${dateStr}.xlsx`);
-      showToast('Campus shift report downloaded as Excel (.xlsx)!');
-    } catch {
-      showError('Could not generate Excel spreadsheet.');
+      XLSX.writeFile(wb, `PHINMA_SJC_Campus_Facilities_Report_${dateStr}.xlsx`);
+      showToast('Executive Campus Report downloaded as styled Excel (.xlsx)!');
+    } catch (err) {
+      console.error('Excel Generation error:', err);
+      showError('Could not generate styled Excel spreadsheet.');
     }
   };
 
@@ -570,40 +959,49 @@ export default function Admin({
   return (
     <div className="p-4 pt-2.5 space-y-3.5 pb-28 text-slate-800">
       
-      {/* Precision Micro-Animation Styles */}
+      {/* Precision Micro-Animation Styles with Strict Animation Toggle Overrides */}
       <style>{`
-        @keyframes itemFloatUp {
-          from {
-            opacity: 0;
-            transform: translate3d(0, 16px, 0) scale(0.975);
+        ${animationsDisabled ? `
+          *, .anim-cascade-item, .anim-pop-item {
+            animation: none !important;
+            transition-duration: 0ms !important;
+            transform: none !important;
+            opacity: 1 !important;
           }
-          to {
-            opacity: 1;
-            transform: translate3d(0, 0, 0) scale(1);
+        ` : `
+          @keyframes itemFloatUp {
+            from {
+              opacity: 0;
+              transform: translate3d(0, 16px, 0) scale(0.975);
+            }
+            to {
+              opacity: 1;
+              transform: translate3d(0, 0, 0) scale(1);
+            }
           }
-        }
-        @keyframes itemPopIn {
-          0% {
-            opacity: 0;
-            transform: scale(0.92);
+          @keyframes itemPopIn {
+            0% {
+              opacity: 0;
+              transform: scale(0.92);
+            }
+            65% {
+              opacity: 1;
+              transform: scale(1.02);
+            }
+            100% {
+              opacity: 1;
+              transform: scale(1);
+            }
           }
-          65% {
-            opacity: 1;
-            transform: scale(1.02);
+          .anim-cascade-item {
+            animation: itemFloatUp 0.38s cubic-bezier(0.16, 1, 0.3, 1) both;
+            will-change: transform, opacity;
           }
-          100% {
-            opacity: 1;
-            transform: scale(1);
+          .anim-pop-item {
+            animation: itemPopIn 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
+            will-change: transform, opacity;
           }
-        }
-        .anim-cascade-item {
-          animation: itemFloatUp 0.38s cubic-bezier(0.16, 1, 0.3, 1) both;
-          will-change: transform, opacity;
-        }
-        .anim-pop-item {
-          animation: itemPopIn 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
-          will-change: transform, opacity;
-        }
+        `}
       `}</style>
 
       {/* Toast Notifications */}
@@ -628,13 +1026,16 @@ export default function Admin({
       )}
 
       {/* Header */}
-      <div className="pt-0.5 anim-cascade-item" style={{ animationDelay: '0ms' }}>
+      <div 
+        className="pt-0.5 anim-cascade-item" 
+        style={{ animationDelay: !animationsDisabled ? '0ms' : '0ms' }}
+      >
         <h2 className="text-base font-bold text-slate-900 leading-tight">
           Campus Operations Management
         </h2>
         <div className="mt-1 flex items-center">
           <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-rose-50 border border-rose-200/80 text-rose-800 text-[10px] font-bold tracking-wider uppercase select-none">
-            <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
+            <span className={`w-1.5 h-1.5 rounded-full bg-rose-500 ${!animationsDisabled ? 'animate-pulse' : ''}`} />
             <span>Supervisor Control Center</span>
           </span>
         </div>
@@ -647,7 +1048,10 @@ export default function Admin({
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
-        style={{ touchAction: 'none', animationDelay: '40ms' }}
+        style={{ 
+          touchAction: 'none', 
+          animationDelay: !animationsDisabled ? '40ms' : '0ms' 
+        }}
         className="anim-cascade-item relative p-1 bg-slate-100/90 rounded-2xl grid grid-cols-4 select-none border border-slate-200/50 shadow-2xs cursor-grab active:cursor-grabbing"
       >
         <div
@@ -656,7 +1060,7 @@ export default function Admin({
             width: 'calc((100% - 8px) / 4)',
             left: '4px',
             transform: `translateX(${effectiveOffset * 100}%)`,
-            transition: isScrubbing ? 'none' : 'transform 0.28s cubic-bezier(0.16, 1, 0.3, 1)'
+            transition: animationsDisabled || isScrubbing ? 'none' : 'transform 0.28s cubic-bezier(0.16, 1, 0.3, 1)'
           }}
         />
 
@@ -674,16 +1078,15 @@ export default function Admin({
         ))}
       </div>
 
-      {/* Tab Content with Individual Staggered Children */}
+      {/* Tab Content */}
       <div key={activeTab} className="space-y-3">
         
         {/* TAB 1: STAFF */}
         {activeTab === 'staff' && (
           <div className="space-y-3">
-            {/* Action Bar */}
             <div 
               className="anim-cascade-item flex items-center justify-between w-full"
-              style={{ animationDelay: '30ms' }}
+              style={{ animationDelay: !animationsDisabled ? '30ms' : '0ms' }}
             >
               <button
                 type="button"
@@ -707,7 +1110,7 @@ export default function Admin({
             {/* Staff Roster Card */}
             <div 
               className="anim-cascade-item bg-white rounded-3xl border border-slate-100 shadow-[0_2px_12px_rgba(0,0,0,0.02)] overflow-hidden"
-              style={{ animationDelay: '80ms' }}
+              style={{ animationDelay: !animationsDisabled ? '80ms' : '0ms' }}
             >
               <button
                 type="button"
@@ -724,7 +1127,7 @@ export default function Admin({
                         Staff Roster ({staffRoster.length})
                       </h3>
                       <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                        <span className={`w-1.5 h-1.5 rounded-full bg-emerald-500 ${!animationsDisabled ? 'animate-pulse' : ''}`} />
                         {onlineUsers.length} Online
                       </span>
                     </div>
@@ -757,7 +1160,7 @@ export default function Admin({
                         <div
                           key={member.id}
                           className="anim-cascade-item py-2 px-3 rounded-2xl bg-slate-50/60 border border-slate-100 flex items-center justify-between text-xs"
-                          style={{ animationDelay: `${mIdx * 35}ms` }}
+                          style={{ animationDelay: !animationsDisabled ? `${mIdx * 35}ms` : '0ms' }}
                         >
                           <div className="flex items-center gap-2.5">
                             <div className="relative flex-shrink-0">
@@ -773,7 +1176,7 @@ export default function Admin({
                                 )}
                               </div>
                               <span className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border-2 border-white ${
-                                isOnline ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'
+                                isOnline ? (animationsDisabled ? 'bg-emerald-500' : 'bg-emerald-500 animate-pulse') : 'bg-slate-300'
                               }`} />
                             </div>
 
@@ -810,7 +1213,7 @@ export default function Admin({
             {/* Building Matrices Header */}
             <div 
               className="anim-cascade-item space-y-2.5 pt-0.5"
-              style={{ animationDelay: '130ms' }}
+              style={{ animationDelay: !animationsDisabled ? '130ms' : '0ms' }}
             >
               <div className="px-1">
                 <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wide">
@@ -821,7 +1224,6 @@ export default function Admin({
                 </p>
               </div>
 
-              {/* Staggered Building Cards */}
               {CAMPUS_BUILDINGS.map((bldg, bIdx) => {
                 const isOpen = openBuildings[bldg.id];
                 const assignedFloorsCount = [1, 2, 3, 4, 5, 6, 7].filter(
@@ -832,7 +1234,7 @@ export default function Admin({
                   <div
                     key={bldg.id}
                     className="anim-cascade-item bg-white rounded-3xl border border-slate-100 shadow-[0_2px_12px_rgba(0,0,0,0.02)] overflow-hidden transition"
-                    style={{ animationDelay: `${170 + bIdx * 65}ms` }}
+                    style={{ animationDelay: !animationsDisabled ? `${170 + bIdx * 65}ms` : '0ms' }}
                   >
                     <button
                       type="button"
@@ -898,7 +1300,7 @@ export default function Admin({
                               <div
                                 key={floorNum}
                                 className="anim-cascade-item p-3 bg-slate-50/60 rounded-2xl border border-slate-100 flex items-center justify-between gap-3 text-xs"
-                                style={{ animationDelay: `${fIdx * 25}ms` }}
+                                style={{ animationDelay: !animationsDisabled ? `${fIdx * 25}ms` : '0ms' }}
                               >
                                 <div className="flex items-center gap-2.5 min-w-0">
                                   <div className="w-8 h-8 rounded-xl bg-[#176e57] text-white flex items-center justify-center font-bold text-xs flex-shrink-0">
@@ -974,7 +1376,7 @@ export default function Admin({
           <div className="space-y-3">
             <div 
               className="anim-cascade-item bg-white rounded-3xl p-5 border border-slate-100 shadow-[0_2px_12px_rgba(0,0,0,0.02)] space-y-3.5"
-              style={{ animationDelay: '40ms' }}
+              style={{ animationDelay: !animationsDisabled ? '40ms' : '0ms' }}
             >
               <div className="flex items-center gap-2.5 border-b border-slate-100 pb-3">
                 <div className="p-2 bg-amber-50 text-amber-800 rounded-xl">
@@ -1030,7 +1432,7 @@ export default function Admin({
               {broadcast?.active && (
                 <div 
                   className="anim-pop-item mt-3 p-3.5 bg-amber-50/80 border border-amber-200/80 rounded-2xl text-xs space-y-1"
-                  style={{ animationDelay: '100ms' }}
+                  style={{ animationDelay: !animationsDisabled ? '100ms' : '0ms' }}
                 >
                   <span className="font-bold text-amber-950 uppercase tracking-wider text-[10px] block">
                     Currently Live on Screen:
@@ -1050,7 +1452,7 @@ export default function Admin({
           <div className="space-y-3">
             <div 
               className="anim-cascade-item bg-white rounded-3xl p-5 border border-slate-100 shadow-[0_2px_12px_rgba(0,0,0,0.02)] space-y-3"
-              style={{ animationDelay: '30ms' }}
+              style={{ animationDelay: !animationsDisabled ? '30ms' : '0ms' }}
             >
               <div className="flex items-center gap-2.5 border-b border-slate-100 pb-3">
                 <div className="p-2 bg-emerald-50 text-[#176e57] rounded-xl">
@@ -1161,7 +1563,7 @@ export default function Admin({
             {/* Inventory List with Staggered Rows */}
             <div 
               className="anim-cascade-item bg-white rounded-3xl p-5 border border-slate-100 shadow-[0_2px_12px_rgba(0,0,0,0.02)] space-y-2.5"
-              style={{ animationDelay: '80ms' }}
+              style={{ animationDelay: !animationsDisabled ? '80ms' : '0ms' }}
             >
               <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wide border-b border-slate-100 pb-2.5">
                 Existing Inventory ({supplies.length} Items)
@@ -1175,13 +1577,13 @@ export default function Admin({
                     <div
                       key={item.id}
                       className="anim-cascade-item p-3 rounded-2xl bg-slate-50/60 border border-slate-100 flex items-center justify-between text-xs transition"
-                      style={{ animationDelay: `${110 + sIdx * 35}ms` }}
+                      style={{ animationDelay: !animationsDisabled ? `${110 + sIdx * 35}ms` : '0ms' }}
                     >
                       <div>
                         <div className="flex items-center gap-1.5">
                           <span className="font-bold text-slate-800">{item.name}</span>
                           {isLow && (
-                            <span className="text-[9px] font-bold bg-rose-100 text-rose-800 px-2 py-0.5 rounded-full animate-pulse">
+                            <span className={`text-[9px] font-bold bg-rose-100 text-rose-800 px-2 py-0.5 rounded-full ${!animationsDisabled ? 'animate-pulse' : ''}`}>
                               Low
                             </span>
                           )}
@@ -1233,7 +1635,7 @@ export default function Admin({
           <div className="space-y-3">
             <div 
               className="anim-cascade-item bg-white rounded-3xl p-5 border border-slate-100 shadow-[0_2px_12px_rgba(0,0,0,0.02)] space-y-3.5"
-              style={{ animationDelay: '30ms' }}
+              style={{ animationDelay: !animationsDisabled ? '30ms' : '0ms' }}
             >
               <div className="border-b border-slate-100 pb-3">
                 <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wide">
@@ -1249,7 +1651,7 @@ export default function Admin({
                   type="button"
                   onClick={handleExportExcel}
                   className="anim-cascade-item w-full p-3.5 bg-emerald-50/80 hover:bg-emerald-100 active:scale-95 text-[#176e57] border border-emerald-200/60 rounded-2xl font-bold text-xs flex items-center justify-between transition shadow-xs"
-                  style={{ animationDelay: '60ms' }}
+                  style={{ animationDelay: !animationsDisabled ? '60ms' : '0ms' }}
                 >
                   <div className="flex items-center gap-2.5">
                     <Download className="w-4 h-4 text-emerald-700" />
@@ -1267,7 +1669,7 @@ export default function Admin({
                   type="button"
                   onClick={handleResetDay}
                   className="anim-cascade-item w-full p-3.5 bg-amber-50/80 hover:bg-amber-100 active:scale-95 text-amber-900 border border-amber-200/60 rounded-2xl font-bold text-xs flex items-center justify-between transition shadow-xs"
-                  style={{ animationDelay: '110ms' }}
+                  style={{ animationDelay: !animationsDisabled ? '110ms' : '0ms' }}
                 >
                   <div className="flex items-center gap-2.5">
                     <RotateCcw className="w-4 h-4 text-amber-700" />
@@ -1285,7 +1687,7 @@ export default function Admin({
                   type="button"
                   onClick={handleClearLogs}
                   className="anim-cascade-item w-full p-3.5 bg-rose-50/80 hover:bg-rose-100 active:scale-95 text-rose-700 border border-rose-200/60 rounded-2xl font-bold text-xs flex items-center justify-between transition shadow-xs"
-                  style={{ animationDelay: '160ms' }}
+                  style={{ animationDelay: !animationsDisabled ? '160ms' : '0ms' }}
                 >
                   <div className="flex items-center gap-2.5">
                     <Trash2 className="w-4 h-4 text-rose-600" />
@@ -1396,7 +1798,7 @@ export default function Admin({
                         ? 'bg-emerald-50 border-emerald-300 shadow-2xs'
                         : 'bg-white hover:bg-slate-50 border-slate-100'
                     }`}
-                    style={{ animationDelay: `${pIdx * 25}ms` }}
+                    style={{ animationDelay: !animationsDisabled ? `${pIdx * 25}ms` : '0ms' }}
                   >
                     <div className="flex items-center gap-2.5">
                       <div className="relative flex-shrink-0">
@@ -1412,7 +1814,7 @@ export default function Admin({
                           )}
                         </div>
                         <span className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border-2 border-white ${
-                          isOnline ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'
+                          isOnline ? (animationsDisabled ? 'bg-emerald-500' : 'bg-emerald-500 animate-pulse') : 'bg-slate-300'
                         }`} />
                       </div>
 
@@ -1593,7 +1995,7 @@ export default function Admin({
         document.body
       )}
 
-      {/* DELETE ACCOUNT MODAL (Allows deleting Staff and secondary Admins like Stitch / 006) */}
+      {/* DELETE ACCOUNT MODAL */}
       {showDeleteModal && typeof document !== 'undefined' && createPortal(
         <div 
           className="fixed inset-0 z-[100] bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-backdrop select-none"
@@ -1642,7 +2044,6 @@ export default function Admin({
                 >
                   <option value="">Select Account</option>
                   {staffRoster
-                    // Protects only the root master 'admin' account
                     .filter((s) => String(s.id).toLowerCase() !== 'admin')
                     .map((staff) => (
                       <option key={staff.id} value={staff.id}>

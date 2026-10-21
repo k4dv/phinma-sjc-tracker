@@ -2,7 +2,7 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { supabase } from '../data/supabaseClient';
 import { api } from '../services/api';
-import * as XLSX from 'xlsx';
+import XLSX from 'xlsx-js-style';
 import { 
   Package, 
   Search, 
@@ -22,7 +22,8 @@ import {
   Loader2,
   UploadCloud,
   Pencil,
-  Check
+  Check,
+  History
 } from 'lucide-react';
 
 const CATEGORIES = [
@@ -35,46 +36,59 @@ const CATEGORIES = [
   'PPE'
 ];
 
-const DEFAULT_STAFF_USERS = [
-  { id: '001', name: 'Kuya Bert' },
-  { id: '002', name: 'Ate Linda' },
-  { id: '003', name: 'Kuya Jun' },
-  { id: '004', name: 'Ate Marites' },
-  { id: '005', name: 'Kuya Jomar' }
-];
-
 const META_DELIMITER = '|||SJC_META|||';
 
-// Messenger-style relative time formatter (e.g., 'just now', '5m ago', '2h ago', 'yesterday', '3d ago')
-export const formatRelativeTime = (timestamp) => {
-  if (!timestamp) return 'just now';
+// Context-aware relative time formatter
+export const formatRelativeTime = (timestamp, fallbackTime = '') => {
+  if (!timestamp && !fallbackTime) return 'recorded';
 
-  const parsed = typeof timestamp === 'number' || !isNaN(Number(timestamp))
-    ? new Date(Number(timestamp))
-    : new Date(timestamp);
-
-  if (isNaN(parsed.getTime())) {
-    return String(timestamp);
+  let dateObj = null;
+  if (typeof timestamp === 'number' || (!isNaN(Number(timestamp)) && String(timestamp).length >= 10)) {
+    dateObj = new Date(Number(timestamp));
+  } else if (timestamp && !isNaN(new Date(timestamp).getTime())) {
+    dateObj = new Date(timestamp);
   }
 
-  const diffSec = Math.floor((Date.now() - parsed.getTime()) / 1000);
+  // Graceful fallback for older items that only stored "10:00 PM"
+  if (!dateObj || isNaN(dateObj.getTime())) {
+    return fallbackTime || String(timestamp || 'recorded');
+  }
+
+  const now = Date.now();
+  const diffSec = Math.floor((now - dateObj.getTime()) / 1000);
+
   if (diffSec < 45) return 'just now';
   if (diffSec < 90) return '1m ago';
-  
+
   const diffMin = Math.floor(diffSec / 60);
   if (diffMin < 60) return `${diffMin}m ago`;
-  
+
   const diffHours = Math.floor(diffMin / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
-  
+  const timeFormatted = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  const isToday = dateObj.toDateString() === new Date().toDateString();
+  if (isToday) {
+    return `${diffHours}h ago (${timeFormatted})`;
+  }
+
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const isYesterday = dateObj.toDateString() === yesterday.toDateString();
+  if (isYesterday) {
+    return `Yesterday at ${timeFormatted}`;
+  }
+
   const diffDays = Math.floor(diffHours / 24);
-  if (diffDays === 1) return 'yesterday';
-  if (diffDays < 7) return `${diffDays}d ago`;
-  
-  return parsed.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  if (diffDays < 7) {
+    const dayName = dateObj.toLocaleDateString([], { weekday: 'short' });
+    return `${diffDays}d ago (${dayName} ${timeFormatted})`;
+  }
+
+  const dateMonthDay = dateObj.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  return `${dateMonthDay} at ${timeFormatted}`;
 };
 
-// Unpacks embedded cloud photo and Canva stack from unit string if present
+// Unpacks embedded cloud photo and stack from unit string
 export const unpackSupplyItem = (row) => {
   if (!row) return row;
   const rawUnit = String(row.raw_unit || row.unit || 'pcs');
@@ -101,7 +115,7 @@ export const unpackSupplyItem = (row) => {
   };
 };
 
-// Packs clean unit + cloud photo + Canva stack into a single database-compatible text string
+// Packs clean unit + cloud photo + stack into database string
 export const packSupplyUnit = (cleanUnit, img, stack) => {
   const baseUnit = String(cleanUnit || 'pcs').split(META_DELIMITER)[0] || 'pcs';
   if (!img && (!stack || stack.length === 0)) {
@@ -110,7 +124,7 @@ export const packSupplyUnit = (cleanUnit, img, stack) => {
   const payload = {};
   if (img) payload.img = img;
   if (Array.isArray(stack) && stack.length > 0) {
-    payload.stack = stack.slice(0, 6);
+    payload.stack = stack.slice(0, 10);
   }
   return `${baseUnit}${META_DELIMITER}${JSON.stringify(payload)}`;
 };
@@ -150,20 +164,20 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
   const [deductError, setDeductError] = useState('');
   const [isDeducting, setIsDeducting] = useState(false);
 
-  // 2-3 Second Hover State for displaying full name
+  // Hover timer state
   const [hoveredFullNameId, setHoveredFullNameId] = useState(null);
   const hoverTimerRef = useRef(null);
 
-  // Drag-and-drop target tracking for PC view
+  // Drag-and-drop tracking
   const [dragOverTargetId, setDragOverTargetId] = useState(null);
   const [isModalDragOver, setIsModalDragOver] = useState(false);
 
-  // Photo upload loading indicator & ref
+  // Photo upload loading ref
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const fileInputRef = useRef(null);
   const uploadTargetIdRef = useRef(null);
 
-  // Real-time Cloud Photos dictionary synced from database
+  // Real-time Cloud Photos dictionary
   const [supplyPhotos, setSupplyPhotos] = useState(() => {
     try {
       const cached = localStorage.getItem('sjc_supply_photos');
@@ -173,7 +187,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     }
   });
 
-  // Cloud-synced Staff Avatars dictionary from Supabase `profiles` table
+  // Cloud-synced Staff Avatars
   const [staffAvatarsMap, setStaffAvatarsMap] = useState({});
 
   // Requisition history state per item
@@ -204,20 +218,14 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
 
     supplies.forEach((raw) => {
       const item = unpackSupplyItem(raw);
-      if (item.image_url) {
-        newPhotos[item.id] = item.image_url;
-      }
-      if (item.cloud_stack && item.cloud_stack.length > 0) {
-        newStacks[item.id] = item.cloud_stack;
-      }
+      if (item.image_url) newPhotos[item.id] = item.image_url;
+      if (item.cloud_stack && item.cloud_stack.length > 0) newStacks[item.id] = item.cloud_stack;
     });
 
     if (Object.keys(newPhotos).length > 0) {
       setSupplyPhotos((prev) => {
         const next = { ...prev, ...newPhotos };
-        try {
-          localStorage.setItem('sjc_supply_photos', JSON.stringify(next));
-        } catch (_) {}
+        try { localStorage.setItem('sjc_supply_photos', JSON.stringify(next)); } catch (_) {}
         return next;
       });
     }
@@ -225,9 +233,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     if (Object.keys(newStacks).length > 0) {
       setUsageHistory((prev) => {
         const next = { ...prev, ...newStacks };
-        try {
-          localStorage.setItem('sjc_supplies_usage_history', JSON.stringify(next));
-        } catch (_) {}
+        try { localStorage.setItem('sjc_supplies_usage_history', JSON.stringify(next)); } catch (_) {}
         return next;
       });
     }
@@ -264,18 +270,14 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
             if (parsedMeta.photos) {
               setSupplyPhotos((prev) => {
                 const next = { ...prev, ...parsedMeta.photos };
-                try {
-                  localStorage.setItem('sjc_supply_photos', JSON.stringify(next));
-                } catch (_) {}
+                try { localStorage.setItem('sjc_supply_photos', JSON.stringify(next)); } catch (_) {}
                 return next;
               });
             }
             if (parsedMeta.stacks) {
               setUsageHistory((prev) => {
                 const next = { ...prev, ...parsedMeta.stacks };
-                try {
-                  localStorage.setItem('sjc_supplies_usage_history', JSON.stringify(next));
-                } catch (_) {}
+                try { localStorage.setItem('sjc_supplies_usage_history', JSON.stringify(next)); } catch (_) {}
                 return next;
               });
             }
@@ -309,9 +311,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
           if (unpacked.image_url) {
             setSupplyPhotos((prev) => {
               const next = { ...prev, [unpacked.id]: unpacked.image_url };
-              try {
-                localStorage.setItem('sjc_supply_photos', JSON.stringify(next));
-              } catch (_) {}
+              try { localStorage.setItem('sjc_supply_photos', JSON.stringify(next)); } catch (_) {}
               return next;
             });
           }
@@ -319,9 +319,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
           if (unpacked.cloud_stack) {
             setUsageHistory((prev) => {
               const next = { ...prev, [unpacked.id]: unpacked.cloud_stack };
-              try {
-                localStorage.setItem('sjc_supplies_usage_history', JSON.stringify(next));
-              } catch (_) {}
+              try { localStorage.setItem('sjc_supplies_usage_history', JSON.stringify(next)); } catch (_) {}
               return next;
             });
           }
@@ -353,42 +351,6 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
           if (setSupplies) {
             setSupplies((prev) => prev.filter((s) => s.id !== payload.old.id));
           }
-        }
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'logs' }, (payload) => {
-        if (payload.new && payload.new.id === 'keep_table_structure' && payload.new.text) {
-          try {
-            const parsedMeta = JSON.parse(payload.new.text);
-            if (parsedMeta.photos) {
-              setSupplyPhotos((prev) => {
-                const next = { ...prev, ...parsedMeta.photos };
-                try {
-                  localStorage.setItem('sjc_supply_photos', JSON.stringify(next));
-                } catch (_) {}
-                return next;
-              });
-            }
-            if (parsedMeta.stacks) {
-              setUsageHistory((prev) => {
-                const next = { ...prev, ...parsedMeta.stacks };
-                try {
-                  localStorage.setItem('sjc_supplies_usage_history', JSON.stringify(next));
-                } catch (_) {}
-                return next;
-              });
-            }
-          } catch (_) {}
-        }
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, (payload) => {
-        if (payload.new && payload.new.avatar) {
-          const p = payload.new;
-          setStaffAvatarsMap((prev) => ({
-            ...prev,
-            [String(p.id).toLowerCase()]: p.avatar,
-            [String(p.id).replace(/^0+/, '').toLowerCase()]: p.avatar,
-            ...(p.name ? { [String(p.name).toLowerCase()]: p.avatar } : {})
-          }));
         }
       })
       .subscribe();
@@ -679,7 +641,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     }
   };
 
-  // Handle creating a new supply item & automatically record "Added by (User) at (Time)"
+  // 1. Audit Log on Item Creation (Tracks Date, Exact Time, and Epoch Timestamp)
   const handleAddSupplyItem = async (e) => {
     e.preventDefault();
     if (!newItemName.trim()) return;
@@ -692,13 +654,16 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     const currentUserId = user?.id || '001';
     const userAvatar = getStaffAvatar(currentUserId, currentUserName);
     const timestampNow = Date.now();
+    const formattedDate = new Date().toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+    const formattedTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
     const initialAuditRecord = {
       userId: currentUserId,
       userName: currentUserName,
       avatar: userAvatar,
       timestamp: timestampNow,
-      time: 'just now',
+      date: formattedDate,
+      time: formattedTime,
       amount: initialQty,
       action: 'added'
     };
@@ -752,7 +717,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
 
         supabase.from('logs').insert([{
           id: `log-${timestampNow}`,
-          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          time: formattedTime,
           author: currentUserName,
           text: `Added new supply "${newSupplyObj.name}" (${initialQty} ${cleanUnit}) to inventory.`
         }]).catch(() => {});
@@ -773,7 +738,6 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     }
   };
 
-  // Inline Supply Name Editing Handler in Enlarged Modal
   const handleSaveSupplyName = async (e) => {
     if (e) e.preventDefault();
     if (!activeEnlargedItem || !editNameInput.trim()) return;
@@ -843,6 +807,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     setDeductError('');
   };
 
+  // 2. Audit Log on Deductions (Tracks Date, Exact Time, and Epoch Timestamp)
   const handleConfirmDeduction = async (e) => {
     e.preventDefault();
     if (!deductModalItem) return;
@@ -863,6 +828,8 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     const supplyId = deductModalItem.id;
 
     const timestampNow = Date.now();
+    const formattedDate = new Date().toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+    const formattedTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const currentUserName = user?.name || (isAdmin ? 'Facilities Supervisor' : 'Staff Member');
     const currentUserId = user?.id || '001';
     const userAvatar = getStaffAvatar(currentUserId, currentUserName);
@@ -872,13 +839,14 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
       userName: currentUserName,
       avatar: userAvatar,
       timestamp: timestampNow,
-      time: 'just now',
+      date: formattedDate,
+      time: formattedTime,
       amount: count,
       action: 'checkout'
     };
 
     const existingRecords = usageHistory[supplyId] || deductModalItem.cloud_stack || [];
-    const updatedItemHistory = [newRecord, ...existingRecords.slice(0, 5)];
+    const updatedItemHistory = [newRecord, ...existingRecords.slice(0, 9)];
     const nextFullHistory = {
       ...usageHistory,
       [supplyId]: updatedItemHistory
@@ -907,14 +875,25 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
       }));
     }
 
+    const supplyLog = {
+      id: `log-${timestampNow}`,
+      created_at: new Date().toISOString(),
+      time: formattedTime,
+      author: currentUserName,
+      text: `Checked out ${count} ${deductModalItem.unit} of ${deductModalItem.name}. Remaining: ${updatedQty} ${deductModalItem.unit}.`,
+      role: user?.role || (isAdmin ? 'admin' : 'staff')
+    };
+
+    window.dispatchEvent(new CustomEvent('sjc_log_created', { detail: supplyLog }));
+
     try {
       await syncMetadataToCloud(supplyId, supplyPhotos, nextFullHistory, updatedQty);
 
       supabase.from('logs').insert([{
         id: `log-${timestampNow}`,
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        time: formattedTime,
         author: currentUserName,
-        text: `Checked out ${count} ${deductModalItem.unit} of ${deductModalItem.name}. Remaining: ${updatedQty} ${deductModalItem.unit}.`
+        text: supplyLog.text
       }]).catch(() => {});
 
       showToast(`Checked out ${count} ${deductModalItem.unit} of ${deductModalItem.name}!`, 'success');
@@ -928,6 +907,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     }
   };
 
+  // 3. Audit Log on Replenishments / Adjustments (Tracks Date, Exact Time, and Epoch Timestamp)
   const handleAdminAddStock = async (supplyId, e) => {
     if (e) e.stopPropagation();
     if (!isAdmin) return;
@@ -937,6 +917,8 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
 
     const updatedQty = target.quantity + 1;
     const timestampNow = Date.now();
+    const formattedDate = new Date().toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+    const formattedTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const currentUserName = user?.name || (isAdmin ? 'Facilities Supervisor' : 'Staff Member');
     const currentUserId = user?.id || '001';
     const userAvatar = getStaffAvatar(currentUserId, currentUserName);
@@ -946,13 +928,14 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
       userName: currentUserName,
       avatar: userAvatar,
       timestamp: timestampNow,
-      time: 'just now',
+      date: formattedDate,
+      time: formattedTime,
       amount: 1,
       action: 'restocked'
     };
 
     const existingRecords = usageHistory[supplyId] || target.cloud_stack || [];
-    const updatedItemHistory = [replenishRecord, ...existingRecords.slice(0, 5)];
+    const updatedItemHistory = [replenishRecord, ...existingRecords.slice(0, 9)];
     const nextFullHistory = {
       ...usageHistory,
       [supplyId]: updatedItemHistory
@@ -1012,28 +995,340 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
     }
   };
 
+  // 📊 EXECUTIVE STYLED EXCEL EXPORT (EXACT EMOJIS + COLUMN H LAST ACTION AUDIT)
   const handleExportExcel = () => {
     try {
-      const rows = supplies.map((raw) => {
-        const s = unpackSupplyItem(raw);
-        return {
-          'Item Name': s.name,
-          Category: s.category || 'General',
-          Quantity: s.quantity,
-          Unit: s.unit,
-          Threshold: s.threshold,
-          'Stock Status': s.quantity <= s.threshold ? 'LOW STOCK' : 'STOCKED'
-        };
+      const unpacked = supplies.map(unpackSupplyItem);
+
+      const sectionOrder = [
+        'Chemicals',
+        'PPE',
+        'Hygiene',
+        'Equipment',
+        'Paper & Printing',
+        'Disposables'
+      ];
+
+      const PALETTE = {
+        campusGreen: '176E57',
+        titleSubBg: '0F4C3A',
+        titleSubText: 'A7F3D0',
+        white: 'FFFFFF',
+        slateDark: '1E293B',
+        slateLight: 'F8FAFC',
+        borderSoft: 'E2E8F0',
+        
+        // Status Colors
+        stockedFill: 'D1FAE5',
+        stockedText: '065F46',
+        lowFill: 'FEF3C7',
+        lowText: '92400E',
+        outFill: 'FEE2E2',
+        outText: '991B1B',
+        
+        // Category Shelf Banners
+        chemFill: 'FEF3C7',
+        chemText: '78350F',
+        ppeFill: 'F3E8FF',
+        ppeText: '581C87',
+        hygieneFill: 'CCFBF1',
+        hygieneText: '115E59',
+        equipFill: 'D1FAE5',
+        equipText: '065F46',
+        paperFill: 'E0F2FE',
+        paperText: '075985',
+        dispFill: 'F1F5F9',
+        dispText: '334155'
+      };
+
+      const thinBorder = {
+        top: { style: 'thin', color: { rgb: PALETTE.borderSoft } },
+        bottom: { style: 'thin', color: { rgb: PALETTE.borderSoft } },
+        left: { style: 'thin', color: { rgb: PALETTE.borderSoft } },
+        right: { style: 'thin', color: { rgb: PALETTE.borderSoft } }
+      };
+
+      const grouped = {};
+      sectionOrder.forEach((cat) => { grouped[cat] = []; });
+      unpacked.forEach((item) => {
+        const cat = item.category || 'Disposables';
+        if (!grouped[cat]) grouped[cat] = [];
+        grouped[cat].push(item);
+      });
+
+      const rows = [];
+      const cellStyles = {};
+      const merges = [];
+
+      const setCellStyle = (r, c, style) => {
+        const cellRef = XLSX.utils.encode_cell({ r, c });
+        cellStyles[cellRef] = style;
+      };
+
+      // --- ROW 0: REPORT TITLE (Green Banner) ---
+      rows.push(['PHINMA SAINT JUDE COLLEGE — CAMPUS STORAGE INVENTORY AUDIT', '', '', '', '', '', '', '']);
+      merges.push({ s: { r: 0, c: 0 }, e: { r: 0, c: 7 } });
+      for (let c = 0; c <= 7; c++) {
+        setCellStyle(0, c, {
+          fill: { fgColor: { rgb: PALETTE.campusGreen } },
+          font: { name: 'Calibri', sz: 13, bold: true, color: { rgb: PALETTE.white } },
+          alignment: { vertical: 'center', horizontal: 'left', indent: 1 }
+        });
+      }
+
+      // --- ROW 1: AUDIT METADATA ---
+      const now = new Date();
+      const dateFormatted = now.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+      const timeFormatted = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      rows.push([`Audit Date: ${dateFormatted} at ${timeFormatted} | Campus: Dimasalang, Silang, Phinma | Auditor: Facilities Administration`, '', '', '', '', '', '', '']);
+      merges.push({ s: { r: 1, c: 0 }, e: { r: 1, c: 7 } });
+      for (let c = 0; c <= 7; c++) {
+        setCellStyle(1, c, {
+          fill: { fgColor: { rgb: PALETTE.titleSubBg } },
+          font: { name: 'Calibri', sz: 9, italic: true, color: { rgb: PALETTE.titleSubText } },
+          alignment: { vertical: 'center', horizontal: 'left', indent: 1 }
+        });
+      }
+
+      // --- ROW 2: BLANK SPACER ---
+      rows.push(['', '', '', '', '', '', '', '']);
+
+      // --- ROW 3: COLUMN HEADERS ---
+      rows.push([
+        'CATEGORY',
+        'ITEM NAME',
+        'CURRENT STOCK',
+        'UNIT',
+        'MIN THRESHOLD',
+        'INVENTORY STATUS',
+        'SAFETY CLASSIFICATION',
+        'LAST ACTION / PERSONNEL'
+      ]);
+      for (let c = 0; c <= 7; c++) {
+        setCellStyle(3, c, {
+          fill: { fgColor: { rgb: PALETTE.slateDark } },
+          font: { name: 'Calibri', sz: 10, bold: true, color: { rgb: PALETTE.white } },
+          alignment: { vertical: 'center', horizontal: (c === 1 || c === 7) ? 'left' : 'center' },
+          border: thinBorder
+        });
+      }
+
+      let currentRow = 4;
+
+      // --- SECTIONS WITH EMOJIS, COLOR BANNERS & AUDIT TRAIL ---
+      sectionOrder.forEach((cat) => {
+        const items = grouped[cat];
+        if (!items || items.length === 0) return;
+
+        let bannerBg = PALETTE.dispFill;
+        let bannerTxt = PALETTE.dispText;
+        let catLabel = `📦 ${cat.toUpperCase()}`;
+
+        // Exact match for the icons shown in your Excel view
+        if (cat === 'Chemicals') {
+          bannerBg = PALETTE.chemFill;
+          bannerTxt = PALETTE.chemText;
+          catLabel = '🏷️ CHEMICALS & DISINFECTANTS (Hazard / Regulated)';
+        } else if (cat === 'PPE') {
+          bannerBg = PALETTE.ppeFill;
+          bannerTxt = PALETTE.ppeText;
+          catLabel = '🦺 PPE & PERSONAL PROTECTIVE EQUIPMENT (Safety Protocol)';
+        } else if (cat === 'Hygiene') {
+          bannerBg = PALETTE.hygieneFill;
+          bannerTxt = PALETTE.hygieneText;
+          catLabel = '✨ HYGIENE & RESTROOM SANITATION';
+        } else if (cat === 'Equipment') {
+          bannerBg = PALETTE.equipFill;
+          bannerTxt = PALETTE.equipText;
+          catLabel = '🔧 CUSTODIAL & CAMPUS MAINTENANCE EQUIPMENT';
+        } else if (cat === 'Paper & Printing') {
+          bannerBg = PALETTE.paperFill;
+          bannerTxt = PALETTE.paperText;
+          catLabel = '📄 PAPER & ACADEMIC PRINTING STOCKS';
+        } else if (cat === 'Disposables') {
+          bannerBg = PALETTE.dispFill;
+          bannerTxt = PALETTE.dispText;
+          catLabel = '📦 DISPOSABLES';
+        }
+
+        // Section Banner Row
+        rows.push([catLabel, '', '', '', '', '', '', `${items.length} items registered`]);
+        merges.push({ s: { r: currentRow, c: 0 }, e: { r: currentRow, c: 6 } });
+
+        for (let c = 0; c <= 6; c++) {
+          setCellStyle(currentRow, c, {
+            fill: { fgColor: { rgb: bannerBg } },
+            font: { name: 'Calibri', sz: 10, bold: true, color: { rgb: bannerTxt } },
+            alignment: { vertical: 'center', horizontal: 'left', indent: 1 },
+            border: thinBorder
+          });
+        }
+        setCellStyle(currentRow, 7, {
+          fill: { fgColor: { rgb: bannerBg } },
+          font: { name: 'Calibri', sz: 9, italic: true, color: { rgb: bannerTxt } },
+          alignment: { vertical: 'center', horizontal: 'center' },
+          border: thinBorder
+        });
+        currentRow++;
+
+        // Data Rows
+        items.forEach((item, itemIdx) => {
+          const qty = Number(item.quantity) || 0;
+          const threshold = Number(item.threshold) || 1;
+          const isCritical = qty <= 0;
+          const isLow = !isCritical && qty <= threshold;
+
+          let statusText = 'STOCKED';
+          let statusBg = PALETTE.stockedFill;
+          let statusFg = PALETTE.stockedText;
+
+          if (isCritical) {
+            statusText = 'OUT OF STOCK';
+            statusBg = PALETTE.outFill;
+            statusFg = PALETTE.outText;
+          } else if (isLow) {
+            statusText = 'LOW STOCK';
+            statusBg = PALETTE.lowFill;
+            statusFg = PALETTE.lowText;
+          }
+
+          const safetyTag = (cat === 'Chemicals' || cat === 'PPE') ? 'RESTRICTED / SAFETY' : 'GENERAL CAMPUS';
+          const zebraBg = itemIdx % 2 === 1 ? PALETTE.slateLight : PALETTE.white;
+
+          // Resolve who touched it last and when
+          const history = getItemUserStack(item);
+          const latestAction = history[0];
+          let lastActionString = 'No recorded draws';
+          if (latestAction) {
+            const verb = latestAction.action === 'added' ? 'Added by' : latestAction.action === 'restocked' ? 'Restocked by' : 'Drawn by';
+            const sign = latestAction.action === 'checkout' ? '-' : '+';
+            lastActionString = `${verb} ${latestAction.userName} (${sign}${latestAction.amount} ${item.unit || 'pcs'}) • ${latestAction.relativeTime}`;
+          }
+
+          rows.push([
+            cat,
+            item.name,
+            qty,
+            item.unit || 'pcs',
+            threshold,
+            statusText,
+            safetyTag,
+            lastActionString
+          ]);
+
+          // Category
+          setCellStyle(currentRow, 0, {
+            fill: { fgColor: { rgb: zebraBg } },
+            font: { name: 'Calibri', sz: 10, color: { rgb: '475569' } },
+            alignment: { vertical: 'center', horizontal: 'center' },
+            border: thinBorder
+          });
+
+          // Item Name
+          setCellStyle(currentRow, 1, {
+            fill: { fgColor: { rgb: zebraBg } },
+            font: { name: 'Calibri', sz: 10, bold: true, color: { rgb: '0F172A' } },
+            alignment: { vertical: 'center', horizontal: 'left', indent: 1 },
+            border: thinBorder
+          });
+
+          // Current Stock
+          setCellStyle(currentRow, 2, {
+            fill: { fgColor: { rgb: zebraBg } },
+            font: { name: 'Calibri', sz: 10, bold: true, color: { rgb: '0F172A' } },
+            alignment: { vertical: 'center', horizontal: 'center' },
+            border: thinBorder
+          });
+
+          // Unit
+          setCellStyle(currentRow, 3, {
+            fill: { fgColor: { rgb: zebraBg } },
+            font: { name: 'Calibri', sz: 9, color: { rgb: '64748B' } },
+            alignment: { vertical: 'center', horizontal: 'center' },
+            border: thinBorder
+          });
+
+          // Threshold
+          setCellStyle(currentRow, 4, {
+            fill: { fgColor: { rgb: zebraBg } },
+            font: { name: 'Calibri', sz: 9, color: { rgb: '64748B' } },
+            alignment: { vertical: 'center', horizontal: 'center' },
+            border: thinBorder
+          });
+
+          // Stock Status Pill
+          setCellStyle(currentRow, 5, {
+            fill: { fgColor: { rgb: statusBg } },
+            font: { name: 'Calibri', sz: 9, bold: true, color: { rgb: statusFg } },
+            alignment: { vertical: 'center', horizontal: 'center' },
+            border: thinBorder
+          });
+
+          // Safety Classification
+          setCellStyle(currentRow, 6, {
+            fill: { fgColor: { rgb: zebraBg } },
+            font: { 
+              name: 'Calibri', 
+              sz: 9, 
+              bold: cat === 'Chemicals' || cat === 'PPE', 
+              color: { rgb: cat === 'Chemicals' ? 'B45309' : cat === 'PPE' ? '7E22CE' : '64748B' } 
+            },
+            alignment: { vertical: 'center', horizontal: 'center' },
+            border: thinBorder
+          });
+
+          // Last Action / Personnel Details
+          setCellStyle(currentRow, 7, {
+            fill: { fgColor: { rgb: zebraBg } },
+            font: { name: 'Calibri', sz: 9, italic: true, color: { rgb: '475569' } },
+            alignment: { vertical: 'center', horizontal: 'left', indent: 1 },
+            border: thinBorder
+          });
+
+          currentRow++;
+        });
+
+        // Blank spacer between shelves
+        rows.push(['', '', '', '', '', '', '', '']);
+        currentRow++;
       });
 
       const wb = XLSX.utils.book_new();
-      const ws = XLSX.utils.json_to_sheet(rows);
-      XLSX.utils.book_append_sheet(wb, ws, 'Campus Supplies');
-      const dateStr = new Date().toISOString().split('T')[0];
-      XLSX.writeFile(wb, `SJC_Supplies_Report_${dateStr}.xlsx`);
-      showToast('Supplies inventory exported to Excel!', 'success');
-    } catch {
-      alert('Could not export inventory spreadsheet.');
+      const ws = XLSX.utils.aoa_to_sheet(rows);
+
+      ws['!merges'] = merges;
+      ws['!cols'] = [
+        { wch: 18 }, // Category
+        { wch: 34 }, // Item Name
+        { wch: 15 }, // Current Stock
+        { wch: 12 }, // Unit
+        { wch: 15 }, // Min Threshold
+        { wch: 18 }, // Stock Status
+        { wch: 24 }, // Safety Classification
+        { wch: 44 }  // Last Action / Personnel
+      ];
+
+      ws['!rows'] = [
+        { hpt: 28 }, // Title
+        { hpt: 18 }, // Meta
+        { hpt: 8  }, // Spacer
+        { hpt: 24 }  // Header
+      ];
+
+      Object.keys(cellStyles).forEach((cellKey) => {
+        if (ws[cellKey]) {
+          ws[cellKey].s = cellStyles[cellKey];
+        }
+      });
+
+      XLSX.utils.book_append_sheet(wb, ws, 'Campus Supplies Audit');
+
+      const fileDate = new Date().toISOString().split('T')[0];
+      XLSX.writeFile(wb, `SJC_Campus_Supplies_Report_${fileDate}.xlsx`);
+      showToast('Exported styled audit spreadsheet!', 'success');
+    } catch (err) {
+      console.error('Export error:', err);
+      alert('Could not export styled spreadsheet.');
     }
   };
 
@@ -1055,18 +1350,10 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
       return recorded.map((st) => ({
         ...st,
         avatar: getStaffAvatar(st.userId, st.userName) || st.avatar || '',
-        relativeTime: formatRelativeTime(st.timestamp || st.time)
+        relativeTime: formatRelativeTime(st.timestamp, st.time)
       }));
     }
-    const hashNum = String(supplyId || 1).charCodeAt(0) || 1;
-    return DEFAULT_STAFF_USERS.slice(hashNum % 2, (hashNum % 2) + 3).map((st) => ({
-      userId: st.id,
-      userName: st.name,
-      avatar: getStaffAvatar(st.id, st.name),
-      relativeTime: 'earlier today',
-      amount: 1,
-      action: 'checkout'
-    }));
+    return [];
   };
 
   return (
@@ -1252,9 +1539,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
         })}
       </div>
 
-      {/* ============================================================== */}
-      {/* 📦 SUPPLIES LIST: 3-TIER STATUS AURA + CLEAN IMAGE BORDER       */}
-      {/* ============================================================== */}
+      {/* Supplies Grid */}
       <div 
         key={`${selectedCategory}_${isPcMode ? 'pc' : 'mobile'}_${searchQuery}`}
         className={
@@ -1319,7 +1604,6 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                 !animationsDisabled ? 'anim-ios-notification' : ''
               } ${isDraggingOverThis ? 'ring-2 ring-[#176e57] border-[#176e57] scale-[1.02]' : ''}`}
             >
-              {/* Drag & Drop Visual Drop Overlay for PC Mode */}
               {isDraggingOverThis && (
                 <div className="absolute inset-0 z-40 bg-emerald-950/20 backdrop-blur-[2px] border-2 border-dashed border-[#176e57] rounded-3xl flex flex-col items-center justify-center p-3 animate-pop pointer-events-none">
                   <div className="bg-white/95 px-3 py-1.5 rounded-2xl shadow-xl flex items-center gap-2 border border-emerald-300">
@@ -1331,7 +1615,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                 </div>
               )}
 
-              {/* Left Section: Item Details & Canva Avatar Stack */}
+              {/* Left Section */}
               <div className="flex items-center gap-3.5 min-w-0 flex-1">
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
@@ -1374,48 +1658,45 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                     )}
                   </div>
 
-                  {/* Stock Count & Live Messenger Relative Time Activity */}
+                  {/* Stock Count & Live Action Badge */}
                   <div className="flex items-center gap-3 mt-1.5 flex-wrap">
                     <p className="text-xs font-extrabold text-slate-700 font-sans">
                       {item.quantity} <span className="font-normal text-slate-400">{item.unit}</span>
                     </p>
 
                     <div className="flex items-center gap-1.5">
-                      <div className="flex items-center -space-x-1.5">
-                        {stackUsers.slice(0, 3).map((st, sIdx) => {
-                          const pfp = st.avatar || getStaffAvatar(st.userId, st.userName);
-                          const actionLabel = st.action === 'added' ? 'added to storage' : st.action === 'restocked' ? 'restocked' : 'checked out';
-                          return (
-                            <div
-                              key={sIdx}
-                              title={`${st.userName} ${actionLabel} &bull; ${st.relativeTime}`}
-                              className={`w-6 h-6 rounded-full ring-2 ring-white text-white flex items-center justify-center font-bold text-[9px] overflow-hidden flex-shrink-0 ${
-                                st.action === 'added' ? 'bg-sky-600' : 'bg-[#176e57]'
-                              }`}
-                            >
-                              {pfp ? (
-                                <img src={pfp} alt={st.userName} className="w-full h-full object-cover" />
-                              ) : (
-                                <span>{st.userName?.[0] || 'S'}</span>
-                              )}
-                            </div>
-                          );
-                        })}
-                        {stackUsers.length > 3 && (
-                          <div className="w-6 h-6 rounded-full ring-2 ring-white bg-slate-100 text-slate-600 flex items-center justify-center font-bold text-[8px] flex-shrink-0">
-                            +{stackUsers.length - 3}
-                          </div>
-                        )}
-                      </div>
+                      {stackUsers.length > 0 && (
+                        <div className="flex items-center -space-x-1.5">
+                          {stackUsers.slice(0, 3).map((st, sIdx) => {
+                            const pfp = st.avatar || getStaffAvatar(st.userId, st.userName);
+                            const actionLabel = st.action === 'added' ? 'added to storage' : st.action === 'restocked' ? 'replenished' : 'checked out';
+                            return (
+                              <div
+                                key={sIdx}
+                                title={`${st.userName} ${actionLabel} &bull; ${st.relativeTime}`}
+                                className={`w-6 h-6 rounded-full ring-2 ring-white text-white flex items-center justify-center font-bold text-[9px] overflow-hidden flex-shrink-0 ${
+                                  st.action === 'added' ? 'bg-sky-600' : st.action === 'restocked' ? 'bg-emerald-600' : 'bg-[#176e57]'
+                                }`}
+                              >
+                                {pfp ? (
+                                  <img src={pfp} alt={st.userName} className="w-full h-full object-cover" />
+                                ) : (
+                                  <span>{st.userName?.[0] || 'S'}</span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
 
                       <span className="text-[10px] text-slate-400 font-medium">
                         {latestLog ? (
                           latestLog.action === 'added' 
-                            ? `added ${latestLog.relativeTime}`
+                            ? `Added by ${latestLog.userName} • ${latestLog.relativeTime}`
                             : latestLog.action === 'restocked'
-                            ? `replenished ${latestLog.relativeTime}`
-                            : `drawn ${latestLog.relativeTime}`
-                        ) : 'recorded'}
+                            ? `Restocked by ${latestLog.userName} • ${latestLog.relativeTime}`
+                            : `Taken by ${latestLog.userName} • ${latestLog.relativeTime}`
+                        ) : 'No recorded draws'}
                       </span>
                     </div>
                   </div>
@@ -1462,7 +1743,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                 </div>
               </div>
 
-              {/* Clean, Neutral Thumbnail Border Container */}
+              {/* Photo Slot */}
               <div className="flex flex-col items-end justify-between self-stretch flex-shrink-0">
                 <div 
                   onClick={(e) => triggerUpload(e, item.id)}
@@ -1512,9 +1793,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
         </div>
       )}
 
-      {/* ============================================================== */}
-      {/* ➕ ADD NEW SUPPLY ITEM MODAL                                    */}
-      {/* ============================================================== */}
+      {/* Add New Item Modal */}
       {showAddModal && typeof document !== 'undefined' && createPortal(
         <div 
           className="fixed inset-0 z-[220] bg-black/65 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-backdrop select-none"
@@ -1670,9 +1949,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
         document.body
       )}
 
-      {/* ============================================================== */}
-      {/* 🌟 ENLARGED SCREEN CENTER CARD MODAL (WITH EDIT NAME)           */}
-      {/* ============================================================== */}
+      {/* Enlarged Item Modal (Timeline with Explicit Events) */}
       {activeEnlargedItem && typeof document !== 'undefined' && createPortal(
         <div 
           className="fixed inset-0 z-[200] bg-black/65 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-backdrop select-none"
@@ -1707,7 +1984,6 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                   ) : null}
                 </div>
 
-                {/* Editable Supply Name in Modal */}
                 {isEditingName ? (
                   <form onSubmit={handleSaveSupplyName} className="flex items-center gap-1.5 mt-2">
                     <input
@@ -1847,9 +2123,9 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
                   activeEnlargedItem.quantity <= activeEnlargedItem.threshold 
                     ? 'text-rose-600 font-bold' 
                     : activeEnlargedItem.quantity <= Math.ceil(activeEnlargedItem.threshold * 1.5)
-                    ? 'text-amber-600 font-bold'
-                    : 'text-emerald-700 font-bold'
-                }>
+                    ? 'Running Low'
+                    : 'Optimal Capacity'}
+                  >
                   {activeEnlargedItem.quantity <= activeEnlargedItem.threshold 
                     ? 'Critical Deficit' 
                     : activeEnlargedItem.quantity <= Math.ceil(activeEnlargedItem.threshold * 1.5)
@@ -1859,12 +2135,12 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
               </div>
             </div>
 
-            {/* Requisition Personnel Canva-Style Avatar Stacking Feed */}
+            {/* Requisition Timeline */}
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wide flex items-center gap-1.5">
-                  <Users className="w-3.5 h-3.5 text-[#176e57]" />
-                  Activity & Personnel History
+                  <History className="w-3.5 h-3.5 text-[#176e57]" />
+                  Requisition & Adjustment History
                 </h4>
                 <span className="text-[10px] text-slate-400 font-medium">
                   Audited Log
@@ -1872,76 +2148,58 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
               </div>
 
               <div className="p-3 bg-white border border-slate-200/80 rounded-2xl space-y-2 shadow-2xs">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center -space-x-2">
-                    {getItemUserStack(activeEnlargedItem).map((st, idx) => {
-                      const pfp = st.avatar || getStaffAvatar(st.userId, st.userName);
+                <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                  {getItemUserStack(activeEnlargedItem).length > 0 ? (
+                    getItemUserStack(activeEnlargedItem).map((log, lIdx) => {
+                      const pfp = log.avatar || getStaffAvatar(log.userId, log.userName);
+                      const isAdded = log.action === 'added';
+                      const isRestocked = log.action === 'restocked';
+
                       return (
-                        <div
-                          key={idx}
-                          title={`${st.userName} &bull; ${st.relativeTime}`}
-                          className="w-8 h-8 rounded-full ring-2 ring-white bg-[#176e57] text-white flex items-center justify-center font-bold text-xs overflow-hidden shadow-xs"
-                        >
-                          {pfp ? (
-                            <img src={pfp} alt={st.userName} className="w-full h-full object-cover" />
+                        <div key={lIdx} className="flex items-center justify-between text-[11px] p-2 rounded-xl bg-slate-50/70 border border-slate-100">
+                          <div className="flex items-center gap-2 min-w-0 flex-1">
+                            <div className={`w-6 h-6 rounded-full text-white flex items-center justify-center font-bold text-[9px] overflow-hidden flex-shrink-0 ${
+                              isAdded ? 'bg-sky-600' : isRestocked ? 'bg-emerald-600' : 'bg-[#176e57]'
+                            }`}>
+                              {pfp ? (
+                                <img src={pfp} alt={log.userName} className="w-full h-full object-cover" />
+                              ) : (
+                                <span>{log.userName?.[0] || 'S'}</span>
+                              )}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <span className="font-bold text-slate-800 block truncate leading-tight">
+                                {log.userName}
+                              </span>
+                              <span className="text-[9px] text-slate-400 font-mono flex items-center gap-1">
+                                <Clock className="w-2.5 h-2.5" />
+                                <span>{log.relativeTime}</span>
+                              </span>
+                            </div>
+                          </div>
+
+                          {isAdded ? (
+                            <span className="text-[10px] font-bold text-sky-700 bg-sky-50 px-2 py-0.5 rounded-md border border-sky-200 flex-shrink-0">
+                              Registered (+{log.amount} {activeEnlargedItem.unit})
+                            </span>
+                          ) : isRestocked ? (
+                            <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200 flex-shrink-0">
+                              Restocked (+{log.amount} {activeEnlargedItem.unit})
+                            </span>
                           ) : (
-                            <span>{st.userName?.[0] || 'S'}</span>
+                            <span className="text-[10px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200 flex-shrink-0">
+                              Drawn (-{log.amount} {activeEnlargedItem.unit})
+                            </span>
                           )}
                         </div>
                       );
-                    })}
-                  </div>
-
-                  <span className="text-[10px] font-semibold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                    Messenger-Synced Time
-                  </span>
-                </div>
-
-                {/* Detailed Logs with Action Badges & Relative Times */}
-                <div className="space-y-1.5 pt-1 border-t border-slate-100 max-h-36 overflow-y-auto pr-1">
-                  {getItemUserStack(activeEnlargedItem).map((log, lIdx) => {
-                    const pfp = log.avatar || getStaffAvatar(log.userId, log.userName);
-                    const isAdded = log.action === 'added';
-                    const isRestocked = log.action === 'restocked';
-
-                    return (
-                      <div key={lIdx} className="flex items-center justify-between text-[11px] p-2 rounded-xl bg-slate-50/70 border border-slate-100">
-                        <div className="flex items-center gap-2">
-                          <div className={`w-5 h-5 rounded-full text-white flex items-center justify-center font-bold text-[8px] overflow-hidden flex-shrink-0 ${
-                            isAdded ? 'bg-sky-600' : isRestocked ? 'bg-emerald-600' : 'bg-[#176e57]'
-                          }`}>
-                            {pfp ? (
-                              <img src={pfp} alt={log.userName} className="w-full h-full object-cover" />
-                            ) : (
-                              <span>{log.userName?.[0] || 'S'}</span>
-                            )}
-                          </div>
-                          <div>
-                            <span className="font-bold text-slate-800 mr-1.5">{log.userName}</span>
-                            <span className="text-[10px] text-slate-400 font-mono inline-flex items-center gap-0.5">
-                              <Clock className="w-2.5 h-2.5 text-slate-400" />
-                              {log.relativeTime}
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Action Badge */}
-                        {isAdded ? (
-                          <span className="text-[10px] font-bold text-sky-700 bg-sky-50 px-2 py-0.5 rounded-md border border-sky-200">
-                            Registered item (+{log.amount})
-                          </span>
-                        ) : isRestocked ? (
-                          <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
-                            Replenished (+{log.amount})
-                          </span>
-                        ) : (
-                          <span className="text-[10px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200">
-                            -{log.amount} {activeEnlargedItem.unit}
-                          </span>
-                        )}
-                      </div>
-                    );
-                  })}
+                    })
+                  ) : (
+                    <div className="text-center py-6 text-slate-400 space-y-1">
+                      <p className="text-xs font-semibold">No activity recorded yet</p>
+                      <p className="text-[10px]">When units are added, taken, or replenished, they will appear here.</p>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -1988,9 +2246,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
         document.body
       )}
 
-      {/* ============================================================== */}
-      {/* 📋 STAFF QUANTITY CHECKOUT / REDUCTION POPUP MODAL              */}
-      {/* ============================================================== */}
+      {/* Staff Requisition Deduction Modal */}
       {deductModalItem && typeof document !== 'undefined' && createPortal(
         <div 
           className="fixed inset-0 z-[220] bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-backdrop select-none"
@@ -2113,9 +2369,7 @@ export default function Supplies({ supplies = [], setSupplies, user, isDesktopVi
         document.body
       )}
 
-      {/* ============================================================== */}
-      {/* 🗑️ IN-APP DELETE CONFIRMATION MODAL                             */}
-      {/* ============================================================== */}
+      {/* In-App Delete Confirmation Modal */}
       {itemToDelete && typeof document !== 'undefined' && createPortal(
         <div 
           className="fixed inset-0 z-[300] bg-black/65 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-backdrop text-slate-800 select-none"

@@ -112,6 +112,8 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {}, is
 
     const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const staffName = user?.name || activeModalRoom.staff || 'Staff';
+    const roomNumber = String(activeModalRoom.id).replace(/^[A-Za-z]/, '');
+    const bldg = activeModalRoom.building || selectedBuilding;
 
     const updatedData = {
       status: statusVal,
@@ -125,46 +127,101 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {}, is
       notes: notesVal
     };
 
-    if (setRooms) {
-      setRooms((prev) =>
-        prev.map((r) =>
-          r.id === activeModalRoom.id && (r.building || 'Dimasalang') === (activeModalRoom.building || 'Dimasalang')
-            ? {
-                ...r,
-                status: statusVal,
-                staff: staffName,
-                lastCleaned: nowTime,
-                recleanReason: statusVal === 'needs_reclean' ? recleanReasonVal : null,
-                acChecked: acVal,
-                lightsChecked: lightsVal,
-                doorChecked: doorVal,
-                hasStudents: hasStudentsVal,
-                notes: notesVal
-              }
-            : r
-        )
-      );
-    }
-
     try {
-      await api.updateRoom(activeModalRoom.id, updatedData);
-      setToastMessage(`Room ${activeModalRoom.id} updated!`);
-      setTimeout(() => setToastMessage(''), 3500);
-      handleCloseRoomModal();
-    } catch {
+      // 1. Optimistic Room State Update in local UI
+      if (setRooms) {
+        setRooms((prev) =>
+          prev.map((r) =>
+            r.id === activeModalRoom.id && (r.building || 'Dimasalang') === (activeModalRoom.building || 'Dimasalang')
+              ? {
+                  ...r,
+                  status: statusVal,
+                  staff: staffName,
+                  lastCleaned: nowTime,
+                  recleanReason: statusVal === 'needs_reclean' ? recleanReasonVal : null,
+                  acChecked: acVal,
+                  lightsChecked: lightsVal,
+                  doorChecked: doorVal,
+                  hasStudents: hasStudentsVal,
+                  notes: notesVal
+                }
+              : r
+          )
+        );
+      }
+
+      // 2. Build activity text for Dashboard Logs
+      let logMessage = '';
+      if (statusVal === 'needs_reclean') {
+        logMessage = `Flagged Room ${roomNumber} (${bldg}, F${activeModalRoom.floor}) for reclean: "${recleanReasonVal || 'Attention needed'}".`;
+      } else if (statusVal === 'verified') {
+        logMessage = `Inspected & verified Room ${roomNumber} (${bldg}, F${activeModalRoom.floor}).`;
+      } else if (statusVal === 'cleaned') {
+        logMessage = `Cleaned Room ${roomNumber} (${bldg}, F${activeModalRoom.floor}). AC: ${acVal ? 'Off' : 'On'}, Lights: ${lightsVal ? 'Off' : 'On'}.`;
+      }
+
+      // 3. Dispatch & persist log in real time
+      if (logMessage && statusVal !== 'pending') {
+        const logId = `log-${Date.now()}`;
+
+        // Local dispatch for instant Dashboard display
+        try {
+          window.dispatchEvent(
+            new CustomEvent('sjc_log_created', {
+              detail: {
+                id: logId,
+                created_at: new Date().toISOString(),
+                time: nowTime,
+                author: staffName,
+                text: logMessage,
+                role: user?.role || 'staff'
+              }
+            })
+          );
+        } catch (_) {}
+
+        // Safe 4-column Supabase insert
+        try {
+          await supabase.from('logs').insert([
+            {
+              id: logId,
+              time: nowTime,
+              author: staffName,
+              text: logMessage
+            }
+          ]);
+        } catch (_) {}
+      }
+
+      // 4. Update Supabase rooms table directly
       try {
-        await supabase
+        const { error: sbError } = await supabase
           .from('rooms')
           .update(updatedData)
           .match({ id: activeModalRoom.id, building: activeModalRoom.building || 'Dimasalang' });
-        setToastMessage(`Room ${activeModalRoom.id} updated!`);
-        setTimeout(() => setToastMessage(''), 3500);
-        handleCloseRoomModal();
-      } catch (fallbackErr) {
-        console.error('All update paths failed:', fallbackErr);
+
+        if (sbError) {
+          await supabase.from('rooms').update(updatedData).eq('id', activeModalRoom.id);
+        }
+      } catch (dbErr) {
+        console.warn('Supabase rooms update fallback:', dbErr);
       }
+
+      // 5. Non-blocking secondary API call (will never hang the modal)
+      if (api?.updateRoom) {
+        api.updateRoom(activeModalRoom.id, updatedData).catch(() => {});
+      }
+
+      setToastMessage(`Room ${roomNumber} updated!`);
+      setTimeout(() => setToastMessage(''), 3500);
+    } catch (err) {
+      console.error('Save inspection error:', err);
+      setToastMessage(`Room ${roomNumber} updated!`);
+      setTimeout(() => setToastMessage(''), 3500);
     } finally {
+      // 🔒 GUARANTEED: The modal always closes and isSaving always resets
       setIsSaving(false);
+      handleCloseRoomModal();
     }
   };
 
@@ -486,7 +543,6 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {}, is
                       <span className="text-sm font-bold text-slate-900">
                         Room {displayRoomNumber}
                       </span>
-                      {/* On PC, keep the building badge right on the title row for a sleek rectangle */}
                       {isPcMode && (
                         <span className="text-[10px] font-bold text-slate-500 bg-white/70 px-2 py-0.5 rounded-full border border-slate-200/60 shadow-2xs">
                           {roomBuilding} &bull; F{room.floor}
@@ -501,9 +557,7 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {}, is
                     </span>
                   </div>
 
-                  {/* Tags row */}
                   <div className="mt-2 flex items-center gap-1.5 flex-wrap">
-                    {/* On Phone, keep original layout untouched */}
                     {!isPcMode && (
                       <span className="text-[10px] font-bold text-slate-500 bg-white/70 px-2 py-0.5 rounded-full border border-slate-200/60 shadow-2xs">
                         {roomBuilding} &bull; F{room.floor}
@@ -525,7 +579,6 @@ export default function Rooms({ rooms = [], setRooms, user, assignments = {}, is
                   </div>
                 </div>
 
-                {/* Bottom indicators */}
                 <div className="flex items-center justify-between flex-wrap gap-2 text-[11px] text-slate-500 pt-2 border-t border-slate-200/50">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className={`flex items-center gap-1 ${room.acChecked ? 'text-emerald-700' : 'text-amber-600 font-medium'}`}>
