@@ -39,6 +39,10 @@ const ADMIN_TABS = [
   { id: 'shift', label: 'Shift' }
 ];
 
+const EMAILJS_SERVICE_ID = 'service_0od3tyo';
+const EMAILJS_TEMPLATE_ID = 'template_cwipfdc';
+const EMAILJS_PUBLIC_KEY = 'SKoJDpKyhviN9MWEQ';
+
 export default function Admin({
   rooms = [],
   setRooms,
@@ -81,7 +85,6 @@ export default function Admin({
   const [selectedUserToDelete, setSelectedUserToDelete] = useState('');
   const [isDeletingAccount, setIsDeletingAccount] = useState(false);
 
-  // Reactive state for Profile Settings Animation Toggle
   const [animationsDisabled, setAnimationsDisabled] = useState(() => {
     try {
       return localStorage.getItem('sjc_animations_disabled') === 'true';
@@ -335,28 +338,71 @@ export default function Admin({
     }
   };
 
+  // SECURE ACCOUNT CREATION WITH EMAIL DISPATCH
   const handleCreateAccount = async (e) => {
     e.preventDefault();
-    if (!newUserId.trim() || !newUserName.trim() || !newUserEmail.trim()) {
+    const cleanId = newUserId.trim();
+    const cleanName = newUserName.trim();
+    const cleanEmail = newUserEmail.trim().toLowerCase();
+
+    if (!cleanId || !cleanName || !cleanEmail) {
       showError('Please provide Staff ID, Full Name, and Email.');
+      return;
+    }
+
+    // Strict Email Format Validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(cleanEmail)) {
+      showError('Please enter a valid email address (e.g. name@phinmaed.com).');
       return;
     }
 
     setIsCreatingAccount(true);
 
+    // Generate secure 6-character temporary password
+    const tempPassword = `SJC-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+
     try {
+      // 1. Send the email with the temporary password via EmailJS
+      const currentTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      
+      const emailResponse = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          service_id: EMAILJS_SERVICE_ID,
+          template_id: EMAILJS_TEMPLATE_ID,
+          user_id: EMAILJS_PUBLIC_KEY,
+          template_params: {
+            email: cleanEmail,
+            to_email: cleanEmail,
+            staff_name: cleanName,
+            passcode: tempPassword,
+            time: currentTime,
+            displayed_email: cleanEmail
+          }
+        })
+      });
+
+      if (!emailResponse.ok) {
+        throw new Error('Failed to dispatch credentials email. Please verify EmailJS service.');
+      }
+
+      // 2. Save user directly into Supabase profiles
       const { data, error } = await supabase.from('profiles').insert([{
-        id: newUserId.trim(),
-        name: newUserName.trim(),
-        email: newUserEmail.trim(),
+        id: cleanId,
+        name: cleanName,
+        email: cleanEmail,
         role: newUserRole,
         access_level: Number(newUserAccessLevel),
+        password: tempPassword,
         is_first_login: true
       }]).select('id, name, email, role, access_level, avatar');
 
       if (error) throw error;
       if (data && data[0]) setStaffRoster((prev) => [...prev, sanitizeUser(data[0])]);
-      showToast(`Account created for ${newUserName.trim()}!`);
+
+      showToast(`Account created! Credentials emailed to ${cleanEmail}`);
       setNewUserId('');
       setNewUserName('');
       setNewUserEmail('');
@@ -540,7 +586,6 @@ export default function Admin({
     showToast('Shift handover logs cleared.');
   };
 
-  // 📊 EXECUTIVE STYLED EXCEL EXPORT (MATCHES SUPPLIES AESTHETIC EXACTLY)
   const handleExportExcel = () => {
     try {
       const PALETTE = {
@@ -551,8 +596,6 @@ export default function Admin({
         slateDark: '1E293B',
         slateLight: 'F8FAFC',
         borderSoft: 'E2E8F0',
-
-        // Inspection Status Badges
         cleanedFill: 'D1FAE5',
         cleanedText: '065F46',
         inProgressFill: 'E0F2FE',
@@ -561,8 +604,6 @@ export default function Admin({
         pendingText: '92400E',
         recleanFill: 'FEE2E2',
         recleanText: '991B1B',
-
-        // Building Section Banners
         dimasalangFill: 'CCFBF1',
         dimasalangText: '115E59',
         silangFill: 'E0F2FE',
@@ -580,7 +621,6 @@ export default function Admin({
         right: { style: 'thin', color: { rgb: PALETTE.borderSoft } }
       };
 
-      // --- SHEET 1: CAMPUS CLASSROOM INSPECTION AUDIT ---
       const buildingOrder = ['Dimasalang', 'Silang', 'Phinma'];
       const groupedRooms = {};
       buildingOrder.forEach((b) => { groupedRooms[b] = []; });
@@ -600,7 +640,6 @@ export default function Admin({
         cellStyles[cellRef] = style;
       };
 
-      // Header Banner (Title)
       rows.push(['PHINMA SAINT JUDE COLLEGE — CAMPUS FACILITIES & SHIFT INSPECTION AUDIT', '', '', '', '', '', '', '', '']);
       merges.push({ s: { r: 0, c: 0 }, e: { r: 0, c: 8 } });
       for (let c = 0; c <= 8; c++) {
@@ -611,7 +650,6 @@ export default function Admin({
         });
       }
 
-      // Metadata Banner
       const now = new Date();
       const dateFormatted = now.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
       const timeFormatted = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -625,10 +663,8 @@ export default function Admin({
         });
       }
 
-      // Spacer
       rows.push(['', '', '', '', '', '', '', '', '']);
 
-      // Column Headers
       rows.push([
         'BUILDING',
         'ROOM #',
@@ -673,7 +709,6 @@ export default function Admin({
           bldgLabel = '🏢 PHINMA BUILDING (Allied Health & Nursing Wing)';
         }
 
-        // Section Banner Row
         rows.push([bldgLabel, '', '', '', '', '', '', '', `${bldgRooms.length} rooms audited`]);
         merges.push({ s: { r: currentRow, c: 0 }, e: { r: currentRow, c: 7 } });
 
@@ -693,7 +728,6 @@ export default function Admin({
         });
         currentRow++;
 
-        // Data Rows
         bldgRooms.forEach((rm, rIdx) => {
           const rawStatus = (rm.status || 'pending').toLowerCase();
           let statusText = 'PENDING';
@@ -730,7 +764,6 @@ export default function Admin({
             rm.notes || rm.recleanReason || ''
           ]);
 
-          // Building
           setCellStyle(currentRow, 0, {
             fill: { fgColor: { rgb: zebraBg } },
             font: { name: 'Calibri', sz: 10, color: { rgb: '475569' } },
@@ -738,7 +771,6 @@ export default function Admin({
             border: thinBorder
           });
 
-          // Room #
           setCellStyle(currentRow, 1, {
             fill: { fgColor: { rgb: zebraBg } },
             font: { name: 'Calibri', sz: 10, bold: true, color: { rgb: '0F172A' } },
@@ -746,7 +778,6 @@ export default function Admin({
             border: thinBorder
           });
 
-          // Floor
           setCellStyle(currentRow, 2, {
             fill: { fgColor: { rgb: zebraBg } },
             font: { name: 'Calibri', sz: 9, color: { rgb: '64748B' } },
@@ -754,7 +785,6 @@ export default function Admin({
             border: thinBorder
           });
 
-          // Status Badge
           setCellStyle(currentRow, 3, {
             fill: { fgColor: { rgb: statusBg } },
             font: { name: 'Calibri', sz: 9, bold: true, color: { rgb: statusFg } },
@@ -762,7 +792,6 @@ export default function Admin({
             border: thinBorder
           });
 
-          // Staff Assigned
           setCellStyle(currentRow, 4, {
             fill: { fgColor: { rgb: zebraBg } },
             font: { name: 'Calibri', sz: 10, bold: rm.staff && rm.staff !== 'Unassigned', color: { rgb: '0F172A' } },
@@ -770,7 +799,6 @@ export default function Admin({
             border: thinBorder
           });
 
-          // Last Verified
           setCellStyle(currentRow, 5, {
             fill: { fgColor: { rgb: zebraBg } },
             font: { name: 'Calibri', sz: 9, color: { rgb: '64748B' } },
@@ -778,7 +806,6 @@ export default function Admin({
             border: thinBorder
           });
 
-          // Controls (AC / Lights / Locked)
           setCellStyle(currentRow, 6, {
             fill: { fgColor: { rgb: zebraBg } },
             font: { name: 'Calibri', sz: 9, fontMono: true, color: { rgb: '334155' } },
@@ -786,7 +813,6 @@ export default function Admin({
             border: thinBorder
           });
 
-          // Occupancy Status
           setCellStyle(currentRow, 7, {
             fill: { fgColor: { rgb: rm.hasStudents ? 'FEF3C7' : zebraBg } },
             font: { name: 'Calibri', sz: 9, bold: rm.hasStudents, color: { rgb: rm.hasStudents ? '92400E' : '64748B' } },
@@ -794,7 +820,6 @@ export default function Admin({
             border: thinBorder
           });
 
-          // Notes
           setCellStyle(currentRow, 8, {
             fill: { fgColor: { rgb: zebraBg } },
             font: { name: 'Calibri', sz: 9, italic: true, color: { rgb: '475569' } },
@@ -805,7 +830,6 @@ export default function Admin({
           currentRow++;
         });
 
-        // Blank spacer between buildings
         rows.push(['', '', '', '', '', '', '', '', '']);
         currentRow++;
       });
@@ -815,22 +839,22 @@ export default function Admin({
 
       wsRooms['!merges'] = merges;
       wsRooms['!cols'] = [
-        { wch: 18 }, // Building
-        { wch: 16 }, // Room #
-        { wch: 12 }, // Floor
-        { wch: 18 }, // Status
-        { wch: 28 }, // Staff
-        { wch: 20 }, // Last Verified
-        { wch: 38 }, // Controls Summary
-        { wch: 20 }, // Occupancy
-        { wch: 34 }  // Notes
+        { wch: 18 },
+        { wch: 16 },
+        { wch: 12 },
+        { wch: 18 },
+        { wch: 28 },
+        { wch: 20 },
+        { wch: 38 },
+        { wch: 20 },
+        { wch: 34 }
       ];
 
       wsRooms['!rows'] = [
-        { hpt: 28 }, // Title
-        { hpt: 18 }, // Meta
-        { hpt: 8  }, // Spacer
-        { hpt: 24 }  // Header
+        { hpt: 28 },
+        { hpt: 18 },
+        { hpt: 8  },
+        { hpt: 24 }
       ];
 
       Object.keys(cellStyles).forEach((k) => {
@@ -839,7 +863,6 @@ export default function Admin({
 
       XLSX.utils.book_append_sheet(wb, wsRooms, 'Campus Classroom Audit');
 
-      // --- SHEET 2: CAMPUS SUPPLIES INVENTORY AUDIT ---
       const supplyRows = [];
       const supplyStyles = {};
       const supplyMerges = [];
@@ -924,13 +947,13 @@ export default function Admin({
       const wsSupplies = XLSX.utils.aoa_to_sheet(supplyRows);
       wsSupplies['!merges'] = supplyMerges;
       wsSupplies['!cols'] = [
-        { wch: 20 }, // Category
-        { wch: 32 }, // Item Name
-        { wch: 14 }, // Quantity
-        { wch: 12 }, // Unit
-        { wch: 16 }, // Min Threshold
-        { wch: 18 }, // Stock Health
-        { wch: 26 }  // Safety Classification
+        { wch: 20 },
+        { wch: 32 },
+        { wch: 14 },
+        { wch: 12 },
+        { wch: 16 },
+        { wch: 18 },
+        { wch: 26 }
       ];
 
       Object.keys(supplyStyles).forEach((k) => {
@@ -959,7 +982,6 @@ export default function Admin({
   return (
     <div className="p-4 pt-2.5 space-y-3.5 pb-28 text-slate-800">
       
-      {/* Precision Micro-Animation Styles with Strict Animation Toggle Overrides */}
       <style>{`
         ${animationsDisabled ? `
           *, .anim-cascade-item, .anim-pop-item {
@@ -1004,7 +1026,6 @@ export default function Admin({
         `}
       `}</style>
 
-      {/* Toast Notifications */}
       {toastMessage && typeof document !== 'undefined' && createPortal(
         <div className="fixed top-20 inset-x-0 z-[150] max-w-sm mx-auto px-4 pointer-events-none animate-toast select-none">
           <div className="pointer-events-auto p-3.5 bg-emerald-50/95 backdrop-blur-sm border border-emerald-300/80 text-emerald-800 text-xs font-semibold rounded-3xl flex items-center gap-2.5 shadow-xl anim-pop-item">
@@ -1107,7 +1128,6 @@ export default function Admin({
               </button>
             </div>
 
-            {/* Staff Roster Card */}
             <div 
               className="anim-cascade-item bg-white rounded-3xl border border-slate-100 shadow-[0_2px_12px_rgba(0,0,0,0.02)] overflow-hidden"
               style={{ animationDelay: !animationsDisabled ? '80ms' : '0ms' }}
@@ -1210,7 +1230,6 @@ export default function Admin({
               </div>
             </div>
 
-            {/* Building Matrices Header */}
             <div 
               className="anim-cascade-item space-y-2.5 pt-0.5"
               style={{ animationDelay: !animationsDisabled ? '130ms' : '0ms' }}
@@ -1560,7 +1579,6 @@ export default function Admin({
               </form>
             </div>
 
-            {/* Inventory List with Staggered Rows */}
             <div 
               className="anim-cascade-item bg-white rounded-3xl p-5 border border-slate-100 shadow-[0_2px_12px_rgba(0,0,0,0.02)] space-y-2.5"
               style={{ animationDelay: !animationsDisabled ? '80ms' : '0ms' }}
@@ -1896,7 +1914,7 @@ export default function Admin({
                   required
                   value={newUserId}
                   onChange={(e) => setNewUserId(e.target.value)}
-                  placeholder="ID"
+                  placeholder="ID (e.g. 006 or 2024-0012)"
                   className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-slate-50 focus:outline-none focus:border-[#176e57] font-semibold"
                 />
               </div>
@@ -1964,9 +1982,9 @@ export default function Admin({
               </div>
 
               <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl space-y-0.5">
-                <span className="text-[10px] font-bold text-slate-600 block">Default Credentials:</span>
+                <span className="text-[10px] font-bold text-slate-600 block">Automated Temporary Password:</span>
                 <p className="text-[10px] text-slate-500">
-                  Standard institutional default password will be assigned automatically.
+                  A temporary password will be generated and automatically emailed to their registered address.
                 </p>
                 <p className="text-[9px] text-slate-400">
                   User will be forced to change this password on their first login.
@@ -1986,7 +2004,7 @@ export default function Admin({
                   disabled={isCreatingAccount}
                   className="flex-1 py-2.5 bg-[#176e57] hover:bg-[#135c49] active:scale-95 text-white font-bold rounded-xl shadow-xs transition disabled:opacity-50"
                 >
-                  {isCreatingAccount ? 'Registering...' : 'Create Account'}
+                  {isCreatingAccount ? 'Sending Email & Creating...' : 'Create Account'}
                 </button>
               </div>
             </form>
@@ -2090,4 +2108,4 @@ export default function Admin({
 
     </div>
   );
-} 
+}

@@ -693,7 +693,7 @@ export default function Login({ onLoginSuccess }) {
                   autoComplete="off"
                   value={staffId}
                   onChange={(e) => setStaffId(e.target.value)}
-                  placeholder={loginMode === 'staff' ? 'Staff ID' : 'Admin ID or Username'}
+                  placeholder={loginMode === 'staff' ? 'Staff ID' : 'ID or Username'}
                   className="w-full pl-10 pr-4 py-2.5 border border-slate-300 rounded-xl text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#176e57] focus:ring-2 focus:ring-[#176e57]/15 bg-white transition duration-150"
                 />
               </div>
