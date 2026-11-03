@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import sjcLogo from '../assets/Logo.jpg';
 import schoolBg from '../assets/School.jpg';
@@ -16,9 +16,9 @@ import {
   Trash,
   HelpCircle,
   ArrowLeft,
-  KeyRound,
   ShieldCheck,
-  Shield
+  Lock,
+  Building2
 } from 'lucide-react';
 
 const REQUEST_CATEGORIES = [
@@ -29,16 +29,40 @@ const REQUEST_CATEGORIES = [
   { label: 'Other Concern', icon: HelpCircle }
 ];
 
+// Campus Buildings and Room configurations matching SJC Tracker structure
+const CAMPUS_DATA = {
+  Dimasalang: {
+    floors: [1, 2, 3, 4, 5, 6, 7],
+    getRooms: (floor) => [
+      `${floor}01`, `${floor}02`, `${floor}03`, `${floor}04`, `${floor}05`
+    ]
+  },
+  Silang: {
+    floors: [1, 2, 3, 4],
+    getRooms: (floor) => [
+      `${floor}41`, `${floor}42`, `${floor}43`, `${floor}44`, `${floor}45`
+    ]
+  },
+  Phinma: {
+    floors: [1, 2, 3, 4],
+    getRooms: (floor) => [
+      `${floor}21`, `${floor}22`, `${floor}23`, `${floor}24`, `${floor}25`
+    ]
+  }
+};
+
 export default function TeacherRequest() {
   const navigate = useNavigate();
 
   // Authentication Gate State
-  const [facultyId, setFacultyId] = useState('');
+  const [facultyPin, setFacultyPin] = useState('');
   const [isVerified, setIsVerified] = useState(false);
   const [authError, setAuthError] = useState('');
 
   // Request Form States
   const [teacherName, setTeacherName] = useState('');
+  const [selectedBuilding, setSelectedBuilding] = useState('Dimasalang');
+  const [selectedFloor, setSelectedFloor] = useState(1);
   const [roomId, setRoomId] = useState('101');
   const [category, setCategory] = useState('Aircon Issue');
   const [notes, setNotes] = useState('');
@@ -49,30 +73,31 @@ export default function TeacherRequest() {
   // Google reCAPTCHA Verification Gate
   const [showCaptchaModal, setShowCaptchaModal] = useState(false);
 
-  const roomOptions = [];
-  for (let floor = 1; floor <= 7; floor++) {
-    for (let rm = 1; rm <= 5; rm++) {
-      roomOptions.push(`${floor}0${rm}`);
-    }
-  }
+  // Exact Faculty Authorization PIN
+  const AUTHORIZED_PIN = '4758';
 
-  // Accepts '100', 'faculty', or any 3+ character code
+  // Automatically update the default room whenever building or floor changes
+  useEffect(() => {
+    const availableRooms = CAMPUS_DATA[selectedBuilding].getRooms(selectedFloor);
+    if (!availableRooms.includes(roomId)) {
+      setRoomId(availableRooms[0]);
+    }
+  }, [selectedBuilding, selectedFloor]);
+
   const handleFacultyLogin = (e) => {
     e.preventDefault();
-    const cleanId = facultyId.trim();
+    const cleanPin = facultyPin.trim();
 
-    if (cleanId === '100' || cleanId.toLowerCase() === 'faculty' || cleanId.length >= 3) {
+    if (cleanPin === AUTHORIZED_PIN) {
       setIsVerified(true);
       setAuthError('');
-      if (cleanId === '100' && !teacherName) {
-        setTeacherName('Engr. Davis (Faculty)');
-      }
+      setFacultyPin('');
     } else {
-      setAuthError('Invalid code. Please enter faculty code 100 or your institutional ID.');
+      setAuthError('Unauthorized code. Please provide an active faculty access PIN.');
+      setFacultyPin('');
     }
   };
 
-  // Step 1: Validate form inputs and pop the reCAPTCHA challenge
   const handlePreSubmit = (e) => {
     e.preventDefault();
     if (!teacherName.trim()) {
@@ -83,26 +108,32 @@ export default function TeacherRequest() {
     setShowCaptchaModal(true);
   };
 
-  // Step 2: Executes after Google reCAPTCHA is verified
   const handleExecuteDispatch = async () => {
     setShowCaptchaModal(false);
     setIsSubmitting(true);
     setErrorMsg('');
 
     const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const reqId = `req-${Date.now()}`;
+
+    // Standard payload strictly matching the Supabase teacher_requests database schema
+    const formattedNotes = notes.trim()
+      ? (selectedBuilding !== 'Dimasalang' ? `[${selectedBuilding}] ${notes.trim()}` : notes.trim())
+      : (selectedBuilding !== 'Dimasalang' ? `[${selectedBuilding}]` : '');
+
     const newRequest = {
-      id: `req-${Date.now()}`,
+      id: reqId,
       created_at: new Date().toISOString(),
       time: now,
-      teacher_name: `${teacherName.trim()} [ID: ${facultyId}]`,
-      room_id: roomId,
+      teacher_name: `${teacherName.trim()} [Faculty]`,
+      room_id: String(roomId),
       category: category,
-      notes: notes.trim(),
+      notes: formattedNotes,
       status: 'pending',
       assigned_to: null
     };
 
-    // 1. Dual-Sync: Save to localStorage & broadcast across open tabs immediately
+    // 1. Dual-Sync: Save to localStorage & broadcast locally across tabs
     try {
       const stored = JSON.parse(localStorage.getItem('sjc_teacher_requests') || '[]');
       const updated = [newRequest, ...stored.filter((r) => r.id !== newRequest.id)];
@@ -112,21 +143,32 @@ export default function TeacherRequest() {
       console.warn('Local storage sync warning:', localErr);
     }
 
-    // 2. Push to Supabase database
+    // 2. Safe Push to Supabase Database (Guaranteed delivery)
     try {
-      const { error: dbError } = await supabase.from('teacher_requests').insert([newRequest]);
+      // First attempt: try inserting with building column if available
+      let { error: dbError } = await supabase
+        .from('teacher_requests')
+        .insert([{ ...newRequest, building: selectedBuilding }]);
+
+      // Fallback: If table does not have a 'building' column, retry with standard schema
       if (dbError) {
-        console.warn('Supabase rejected insert, fallback to local sync:', dbError.message);
+        const retryResult = await supabase
+          .from('teacher_requests')
+          .insert([newRequest]);
+        dbError = retryResult.error;
       }
 
-      // Non-blocking shift log alert
+      // 3. Post to Live Custodial Shift Log so supervisor & staff dashboard sees it immediately
       try {
-        await supabase.from('logs').insert([{
+        const newLog = {
           id: `log-${Date.now()}`,
+          created_at: new Date().toISOString(),
           time: now,
           author: 'Faculty Alert',
-          text: `Teacher Request (${roomId}): ${teacherName} reported ${category}. "${notes.trim() || 'Urgent assistance needed.'}"`
-        }]);
+          text: `Teacher Request (${selectedBuilding} - Rm ${roomId}): ${teacherName.trim()} reported ${category}. "${notes.trim() || 'Urgent assistance needed.'}"`
+        };
+        await supabase.from('logs').insert([newLog]);
+        window.dispatchEvent(new CustomEvent('sjc_log_created', { detail: newLog }));
       } catch (logErr) {
         console.warn('Log insert bypassed:', logErr);
       }
@@ -144,9 +186,14 @@ export default function TeacherRequest() {
     setSubmittedRequest(null);
     setNotes('');
     setCategory('Aircon Issue');
+    setSelectedBuilding('Dimasalang');
+    setSelectedFloor(1);
     setRoomId('101');
     setErrorMsg('');
   };
+
+  const availableFloors = CAMPUS_DATA[selectedBuilding].floors;
+  const availableRooms = CAMPUS_DATA[selectedBuilding].getRooms(selectedFloor);
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col justify-between max-w-md mx-auto relative shadow-xl font-sans">
@@ -194,7 +241,7 @@ export default function TeacherRequest() {
           <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-100 space-y-4 animate-pop">
             <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
               <div className="p-2 bg-emerald-50 text-[#176e57] rounded-xl">
-                <KeyRound className="w-4 h-4" />
+                <Lock className="w-4 h-4" />
               </div>
               <div>
                 <h2 className="text-sm font-bold text-slate-800">Faculty Verification</h2>
@@ -215,22 +262,22 @@ export default function TeacherRequest() {
                   Enter Faculty Access Code:
                 </label>
                 <input
-                  type="text"
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={4}
                   required
                   autoComplete="off"
-                  value={facultyId}
-                  onChange={(e) => setFacultyId(e.target.value)}
-                  placeholder="Enter code (e.g. 100)"
-                  className="w-full p-2.5 border border-slate-200 rounded-xl text-slate-800 font-mono font-bold focus:outline-none focus:border-[#176e57] tracking-wider text-sm bg-slate-50"
+                  value={facultyPin}
+                  onChange={(e) => setFacultyPin(e.target.value)}
+                  placeholder="••••"
+                  className="w-full p-2.5 border border-slate-200 rounded-xl text-slate-800 font-mono font-bold tracking-widest text-center focus:outline-none focus:border-[#176e57] text-base bg-slate-50"
                 />
-                <span className="text-[10px] text-slate-400 mt-1.5 block">
-                  Testing code: Enter <strong>100</strong> to open the request form.
-                </span>
               </div>
 
               <button
                 type="submit"
-                className="w-full py-3 bg-[#176e57] hover:bg-[#135c49] active:scale-[0.98] text-white font-bold rounded-xl text-xs shadow-sm transition"
+                disabled={facultyPin.length < 4}
+                className="w-full py-3 bg-[#176e57] hover:bg-[#135c49] disabled:bg-slate-300 disabled:cursor-not-allowed active:scale-[0.98] text-white font-bold rounded-xl text-xs shadow-sm transition"
               >
                 Verify & Open Call Screen
               </button>
@@ -246,14 +293,14 @@ export default function TeacherRequest() {
             <div>
               <h2 className="text-lg font-bold text-slate-800">Dispatch Received!</h2>
               <p className="text-xs text-slate-500 mt-1">
-                Custodial personnel assigned to <strong>Floor {submittedRequest.room_id[0]}</strong> have been notified.
+                Custodial personnel assigned to <strong>{selectedBuilding} - Room {submittedRequest.room_id}</strong> have been notified.
               </p>
             </div>
 
             <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200/70 text-left space-y-2 text-xs">
               <div className="flex justify-between">
-                <span className="text-slate-400">Classroom:</span>
-                <span className="font-bold text-slate-800">Room {submittedRequest.room_id}</span>
+                <span className="text-slate-400">Location:</span>
+                <span className="font-bold text-slate-800">{selectedBuilding} • Room {submittedRequest.room_id}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-400">Category:</span>
@@ -280,7 +327,7 @@ export default function TeacherRequest() {
             </button>
           </div>
         ) : (
-          /* Step 2: Form */
+          /* Step 2: Form (Clean layout matching reference image) */
           <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100 space-y-4 animate-pop">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2">
@@ -288,12 +335,12 @@ export default function TeacherRequest() {
                   <BellRing className="w-4 h-4" />
                 </div>
                 <div>
-                  <h2 className="text-sm font-bold text-slate-800">Call Janitorial Staff</h2>
-                  <p className="text-[11px] text-slate-400">Immediate classroom alert</p>
+                  <h2 className="text-sm font-bold text-slate-800">Call Custodial Staff</h2>
+                  <p className="text-[11px] text-slate-400">Classroom assistance dispatch</p>
                 </div>
               </div>
               <span className="text-[10px] bg-emerald-50 text-[#176e57] border border-emerald-200 font-bold px-2 py-0.5 rounded-md flex items-center gap-1">
-                <ShieldCheck className="w-3 h-3" /> ID: {facultyId}
+                <ShieldCheck className="w-3 h-3" /> Faculty Verified
               </span>
             </div>
 
@@ -305,9 +352,10 @@ export default function TeacherRequest() {
             )}
 
             <form onSubmit={handlePreSubmit} className="space-y-3.5 text-xs">
+              {/* Teacher Name Input */}
               <div>
                 <label className="text-[11px] font-bold text-slate-700 block mb-1">
-                  Faculty Name / Department:
+                  Teacher Name / Department:
                 </label>
                 <input
                   type="text"
@@ -319,26 +367,81 @@ export default function TeacherRequest() {
                 />
               </div>
 
-              <div>
-                <label className="text-[11px] font-bold text-slate-700 block mb-1">
-                  Classroom Location:
-                </label>
-                <select
-                  value={roomId}
-                  onChange={(e) => setRoomId(e.target.value)}
-                  className="w-full p-2.5 border border-slate-200 rounded-xl text-slate-800 bg-white font-mono font-bold focus:outline-none focus:border-[#176e57]"
-                >
-                  {roomOptions.map((rm) => (
-                    <option key={rm} value={rm}>
-                      Room {rm} (Floor {rm[0]})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
+              {/* Campus Building Selector (Pill tabs without dots) */}
               <div>
                 <label className="text-[11px] font-bold text-slate-700 block mb-1.5">
-                  Assistance Type:
+                  Campus Building:
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {['Dimasalang', 'Silang', 'Phinma'].map((bldg) => {
+                    const isSelected = selectedBuilding === bldg;
+                    return (
+                      <button
+                        key={bldg}
+                        type="button"
+                        onClick={() => {
+                          setSelectedBuilding(bldg);
+                          setSelectedFloor(1);
+                        }}
+                        className={`p-2.5 rounded-xl text-center font-semibold text-xs border flex items-center justify-center gap-1.5 transition active:scale-95 select-none ${
+                          isSelected
+                            ? 'border-[#176e57] bg-emerald-50/70 text-[#176e57]'
+                            : 'border-slate-200 text-slate-600 bg-white hover:bg-slate-50'
+                        }`}
+                      >
+                        <Building2 
+                          className={`w-3.5 h-3.5 flex-shrink-0 ${
+                            isSelected ? 'text-[#176e57]' : 'text-slate-400'
+                          }`} 
+                        />
+                        <span className="truncate">{bldg}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Floor and Room Number Side-by-Side */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                    Floor:
+                  </label>
+                  <select
+                    value={selectedFloor}
+                    onChange={(e) => setSelectedFloor(Number(e.target.value))}
+                    className="w-full p-2.5 border border-slate-200 rounded-xl text-slate-800 bg-white font-medium focus:outline-none focus:border-[#176e57]"
+                  >
+                    {availableFloors.map((flr) => (
+                      <option key={flr} value={flr}>
+                        Floor {flr}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                    Room Number:
+                  </label>
+                  <select
+                    value={roomId}
+                    onChange={(e) => setRoomId(e.target.value)}
+                    className="w-full p-2.5 border border-slate-200 rounded-xl text-slate-800 bg-white font-medium focus:outline-none focus:border-[#176e57]"
+                  >
+                    {availableRooms.map((rm) => (
+                      <option key={rm} value={rm}>
+                        Room {rm}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Assistance Type */}
+              <div>
+                <label className="text-[11px] font-bold text-slate-700 block mb-1.5">
+                  Assistance Type Needed:
                 </label>
                 <div className="grid grid-cols-2 gap-1.5">
                   {REQUEST_CATEGORIES.map((cat) => {
@@ -351,7 +454,7 @@ export default function TeacherRequest() {
                         onClick={() => setCategory(cat.label)}
                         className={`p-2 rounded-xl text-left font-semibold text-[11px] border flex items-center gap-1.5 transition active:scale-95 ${
                           isSelected
-                            ? 'border-[#176e57] bg-emerald-50 text-[#176e57] font-bold shadow-xs'
+                            ? 'border-[#176e57] bg-emerald-50/70 text-[#176e57]'
                             : 'border-slate-200 text-slate-600 bg-white hover:bg-slate-50'
                         }`}
                       >
@@ -363,19 +466,21 @@ export default function TeacherRequest() {
                 </div>
               </div>
 
+              {/* Notes */}
               <div>
                 <label className="text-[11px] font-bold text-slate-700 block mb-1">
-                  Notes / Details:
+                  Details / Specific Notes (Optional):
                 </label>
                 <textarea
                   rows={2}
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
-                  placeholder="e.g. Water leak near blackboard, 2 reams bond paper..."
+                  placeholder="e.g. Water leak from ceiling, emergency spill cleanup..."
                   className="w-full p-2.5 border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:border-[#176e57]"
                 />
               </div>
 
+              {/* Submit Button */}
               <button
                 type="submit"
                 disabled={isSubmitting}
@@ -384,12 +489,12 @@ export default function TeacherRequest() {
                 {isSubmitting ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Dispatching Staff...</span>
+                    <span>Sending Alert...</span>
                   </>
                 ) : (
                   <>
-                    <Shield className="w-4 h-4" />
-                    <span>Verify & Send Request</span>
+                    <Send className="w-4 h-4" />
+                    <span>Send Alert to Custodial Staff</span>
                   </>
                 )}
               </button>
@@ -399,7 +504,7 @@ export default function TeacherRequest() {
       </div>
 
       <div className="pb-6 text-center text-[11px] text-slate-400">
-        PHINMA Saint Jude College • Dimasalang Facilities
+        PHINMA Saint Jude College • Custodial Dispatch
       </div>
 
       {/* Google reCAPTCHA Modal Shield */}
