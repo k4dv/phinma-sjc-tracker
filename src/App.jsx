@@ -13,9 +13,21 @@ import QRDoorRouter from './pages/QRDoorRouter';
 import QRScannerModal from './components/QRScannerModal';
 import { supabase } from './data/supabaseClient';
 import { api } from './services/api';
+import { validatePasswordStrength, hashPassword } from './utils/security';
 import sjcLogo from './assets/Logo.jpg';
 import schoolBg from './assets/School.jpg';
-import { Megaphone, QrCode } from 'lucide-react';
+import { 
+  Megaphone, 
+  QrCode, 
+  Check, 
+  X,
+  AlertTriangle,
+  Lock, 
+  Eye, 
+  EyeOff, 
+  Mail,
+  ShieldCheck 
+} from 'lucide-react';
 import { 
   INITIAL_ROOMS, 
   INITIAL_SUPPLIES, 
@@ -23,6 +35,16 @@ import {
   INITIAL_ASSIGNMENTS, 
   INITIAL_BROADCAST 
 } from './data/mockData';
+
+const EMAILJS_SERVICE_ID = 'service_0od3tyo';
+const EMAILJS_TEMPLATE_ID = 'template_cwipfdc';
+const EMAILJS_PUBLIC_KEY = 'SKoJDpKyhviN9MWEQ';
+
+const formatOtpWithHyphen = (val = '') => {
+  const digits = String(val).replace(/\D/g, '').slice(0, 6);
+  if (digits.length <= 3) return digits;
+  return `${digits.slice(0, 3)}-${digits.slice(3)}`;
+};
 
 const isVisibleLog = (logItem) => {
   if (!logItem) return false;
@@ -39,6 +61,72 @@ export default function App() {
     const saved = localStorage.getItem('sjc_active_user') || sessionStorage.getItem('sjc_active_user');
     return saved ? JSON.parse(saved) : null;
   });
+
+  // First-Time Login Password Change Interceptor States
+  const [firstLoginName, setFirstLoginName] = useState('');
+  const [firstLoginOtpInput, setFirstLoginOtpInput] = useState('');
+  const [firstLoginGeneratedOtp, setFirstLoginGeneratedOtp] = useState('');
+  const [firstLoginResendTimer, setFirstLoginResendTimer] = useState(0);
+  const [isSendingFirstOtp, setIsSendingFirstOtp] = useState(false);
+  const [firstLoginPass, setFirstLoginPass] = useState('');
+  const [firstLoginConfirm, setFirstLoginConfirm] = useState('');
+  const [showFirstLoginPass, setShowFirstLoginPass] = useState(false);
+  const [firstLoginError, setFirstLoginError] = useState('');
+  const [isSavingFirstLogin, setIsSavingFirstLogin] = useState(false);
+
+  const sendFirstLoginEmailOtp = async (targetUser) => {
+    if (!targetUser) return;
+    const newOtp = Math.floor(100000 + Math.random() * 900000).toString();
+    const currentTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const destinationEmail = targetUser.email || `${String(targetUser.id).toLowerCase()}@phinmaed.com`;
+
+    setFirstLoginGeneratedOtp(newOtp);
+    setFirstLoginResendTimer(30);
+    setIsSendingFirstOtp(true);
+
+    try {
+      await fetch('https://api.emailjs.com/api/v1.0/email/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          service_id: EMAILJS_SERVICE_ID,
+          template_id: EMAILJS_TEMPLATE_ID,
+          user_id: EMAILJS_PUBLIC_KEY,
+          template_params: {
+            email: destinationEmail,
+            to_email: destinationEmail,
+            staff_name: targetUser.name || 'Staff Member',
+            passcode: newOtp,
+            time: currentTime,
+            displayed_email: destinationEmail
+          }
+        })
+      });
+    } catch (err) {
+      console.error('Failed to send first-login OTP:', err);
+    } finally {
+      setIsSendingFirstOtp(false);
+    }
+  };
+
+  useEffect(() => {
+    if (user?.is_first_login) {
+      setFirstLoginName(user.name && user.name !== 'Staff Member' ? user.name : '');
+      setFirstLoginOtpInput('');
+      setFirstLoginPass('');
+      setFirstLoginConfirm('');
+      setFirstLoginError('');
+      sendFirstLoginEmailOtp(user);
+    }
+  }, [user?.is_first_login, user?.id]);
+
+  useEffect(() => {
+    if (!user?.is_first_login || firstLoginResendTimer <= 0) return;
+    const timer = setInterval(() => {
+      setFirstLoginResendTimer((prev) => Math.max(0, prev - 1));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [user?.is_first_login, firstLoginResendTimer]);
 
   const [isDesktopView, setIsDesktopView] = useState(() => {
     const savedUser = localStorage.getItem('sjc_active_user') || sessionStorage.getItem('sjc_active_user');
@@ -304,13 +392,11 @@ export default function App() {
           });
         }
 
-if (logsRes.data?.length) {
+        if (logsRes.data?.length) {
           const visibleLogs = logsRes.data.filter(isVisibleLog);
           setLogs((prev) => {
             const map = new Map();
-            // Preserve local notes
             prev.forEach((l) => map.set(l.id, l));
-            // Merge remote database rows
             visibleLogs.forEach((l) => map.set(l.id, l));
             const merged = Array.from(map.values());
             try {
@@ -630,6 +716,70 @@ if (logsRes.data?.length) {
     navigate('/login', { replace: true });
   };
 
+  // First-Time Login Modern Password Change Submission
+  const handleFirstLoginSubmit = async (e) => {
+    e.preventDefault();
+    setFirstLoginError('');
+
+    const rawOtpDigits = firstLoginOtpInput.replace(/\D/g, '');
+    if (rawOtpDigits.length !== 6 || (firstLoginGeneratedOtp && rawOtpDigits !== firstLoginGeneratedOtp)) {
+      setFirstLoginError('Invalid email OTP code. Please check the 6-digit code sent to your email.');
+      return;
+    }
+
+    const cleanName = firstLoginName.trim() || user?.name || 'Staff Member';
+    const cleanPass = firstLoginPass.trim();
+    const cleanConfirm = firstLoginConfirm.trim();
+
+    const strength = validatePasswordStrength(cleanPass, {
+      ...user,
+      name: cleanName
+    });
+
+    if (!strength.isValid) {
+      setFirstLoginError(
+        strength.warningMessage ||
+          'Password must contain at least 1 lowercase, 1 uppercase, 1 number, 1 special character, and no personal info.'
+      );
+      return;
+    }
+
+    if (cleanPass !== cleanConfirm) {
+      setFirstLoginError('New password and confirmation do not match.');
+      return;
+    }
+
+    setIsSavingFirstLogin(true);
+
+    try {
+      await api.completeFirstLogin(user.id, {
+        newPassword: cleanPass,
+        updatedName: cleanName
+      });
+
+      const passHash = await hashPassword(cleanPass);
+      localStorage.setItem(`sjc_pass_hash_${String(user.id).toLowerCase()}`, passHash);
+      localStorage.setItem(`sjc_pass_${user.id}`, cleanPass);
+
+      const updatedUser = {
+        ...user,
+        name: cleanName,
+        is_first_login: false
+      };
+
+      setUser(updatedUser);
+      if (localStorage.getItem('sjc_active_user')) {
+        localStorage.setItem('sjc_active_user', JSON.stringify(updatedUser));
+      } else {
+        sessionStorage.setItem('sjc_active_user', JSON.stringify(updatedUser));
+      }
+    } catch (err) {
+      setFirstLoginError(err.message || 'Failed to save new password to database.');
+    } finally {
+      setIsSavingFirstLogin(false);
+    }
+  };
+
   const handleGlobalScanSuccess = (scannedRoomId) => {
     const rawId = String(scannedRoomId).trim();
     const idNum = parseInt(rawId, 10);
@@ -653,6 +803,20 @@ if (logsRes.data?.length) {
   const isPublicPage = location.pathname === '/request' || location.pathname === '/door';
   const allRoomIds = rooms.map((r) => String(r.id));
   const isCurtainActive = curtainStage !== 'idle';
+
+  const rawAppOtpDigits = firstLoginOtpInput.replace(/\D/g, '');
+  const isTypingAppOtp = rawAppOtpDigits.length > 0;
+  const isAppOtpValid =
+    rawAppOtpDigits.length === 6 &&
+    (!firstLoginGeneratedOtp || rawAppOtpDigits === firstLoginGeneratedOtp);
+
+  const passCheck = validatePasswordStrength(firstLoginPass, {
+    ...user,
+    name: firstLoginName || user?.name
+  });
+  const isTypingFirstPass = firstLoginPass.length > 0;
+  const isConfirmTyping = firstLoginConfirm.length > 0;
+  const isConfirmMatching = isConfirmTyping && firstLoginConfirm === firstLoginPass && passCheck.isValid;
 
   return (
     <div 
@@ -887,6 +1051,304 @@ if (logsRes.data?.length) {
         onScanSuccess={handleGlobalScanSuccess}
         allRoomIds={allRoomIds}
       />
+
+      {/* ============================================================== */}
+      {/* 🔐 FIRST-TIME LOGIN MODERN PASSWORD REQUIREMENT INTERCEPTOR    */}
+      {/* Email OTP (000-000) on top + Red/Green Dynamic Outlines         */}
+      {/* ============================================================== */}
+      {user?.is_first_login && (
+        <div className="fixed inset-0 z-[260] bg-black/80 backdrop-blur-xs flex items-center justify-center p-4 select-none">
+          <div className="bg-white rounded-3xl p-6 max-w-sm w-full space-y-4 shadow-2xl border border-slate-100 animate-pop">
+            <div className="flex items-start justify-between">
+              <div>
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-800 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200 uppercase tracking-wider">
+                  <ShieldCheck className="w-3 h-3 text-[#176e57]" />
+                  Security Setup Required
+                </span>
+                <h3 className="font-extrabold text-slate-900 text-base mt-1.5">
+                  First-Time Sign In
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+                  Enter the verification code sent to your email and create a new password.
+                </p>
+              </div>
+            </div>
+
+            {(firstLoginError || (isTypingFirstPass && !passCheck.isValid)) && (
+              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold rounded-2xl flex items-start gap-2 animate-shake">
+                <AlertTriangle className="w-4 h-4 text-rose-600 flex-shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <span className="block font-bold text-rose-900 text-[11px]">
+                    {passCheck.includesPersonalInfo || passCheck.isPredictable
+                      ? 'Weak / Predictable Password Detected'
+                      : 'Security Requirements Not Yet Met'}
+                  </span>
+                  <span className="block text-[11px] text-rose-700 font-medium leading-snug">
+                    {firstLoginError || passCheck.warningMessage}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            <form onSubmit={handleFirstLoginSubmit} className="space-y-3 text-xs">
+              <div>
+                <label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider block mb-1">
+                  Confirm Full Name:
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={firstLoginName}
+                  onChange={(e) => setFirstLoginName(e.target.value)}
+                  placeholder="e.g. Kuya Bert"
+                  className="w-full p-2.5 border border-slate-200 rounded-xl bg-slate-50 focus:outline-none focus:border-[#176e57] font-semibold"
+                />
+              </div>
+
+              {/* Email OTP Input Bar (000-000) right above Create New Password */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">
+                    Email OTP:
+                  </label>
+                  <button
+                    type="button"
+                    disabled={firstLoginResendTimer > 0 || isSendingFirstOtp}
+                    onClick={() => sendFirstLoginEmailOtp(user)}
+                    className={`text-[10px] font-bold transition ${
+                      firstLoginResendTimer > 0 ? 'text-slate-400 cursor-not-allowed' : 'text-[#176e57] hover:underline'
+                    }`}
+                  >
+                    {isSendingFirstOtp ? 'Sending...' : firstLoginResendTimer > 0 ? `Resend (${firstLoginResendTimer}s)` : 'Resend OTP'}
+                  </button>
+                </div>
+
+                <div className="relative">
+                  <Mail className={`w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none transition-colors ${
+                    !isTypingAppOtp
+                      ? 'text-slate-400'
+                      : isAppOtpValid
+                      ? 'text-emerald-600'
+                      : 'text-rose-500'
+                  }`} />
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    required
+                    maxLength={7}
+                    value={firstLoginOtpInput}
+                    onChange={(e) => {
+                      setFirstLoginOtpInput(formatOtpWithHyphen(e.target.value));
+                      setFirstLoginError('');
+                    }}
+                    placeholder="000-000"
+                    className={`w-full pl-8 pr-3 py-2.5 border-2 rounded-2xl font-mono font-bold tracking-widest text-center transition-all duration-200 focus:outline-none ${
+                      !isTypingAppOtp
+                        ? 'border-slate-200 bg-slate-50 text-slate-800 focus:border-[#176e57]'
+                        : isAppOtpValid
+                        ? 'border-emerald-500 bg-emerald-50/70 text-emerald-950 ring-2 ring-emerald-500/20'
+                        : 'border-rose-500 bg-rose-50/70 text-rose-950 ring-2 ring-rose-500/20'
+                    }`}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">
+                    Create New Password:
+                  </label>
+                  {isTypingFirstPass && (
+                    <span className={`text-[10px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full ${
+                      passCheck.isValid
+                        ? 'bg-emerald-100 text-emerald-800'
+                        : 'bg-rose-100 text-rose-700'
+                    }`}>
+                      {passCheck.isValid ? 'Strong & Secure' : 'Weak / Incomplete'}
+                    </span>
+                  )}
+                </div>
+
+                <div className="relative">
+                  <Lock className={`w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none transition-colors ${
+                    !isTypingFirstPass
+                      ? 'text-slate-400'
+                      : passCheck.isValid
+                      ? 'text-emerald-600'
+                      : 'text-rose-500'
+                  }`} />
+                  <input
+                    type={showFirstLoginPass ? 'text' : 'password'}
+                    required
+                    value={firstLoginPass}
+                    onChange={(e) => {
+                      setFirstLoginPass(e.target.value);
+                      setFirstLoginError('');
+                    }}
+                    placeholder="Enter strong password"
+                    className={`w-full pl-8 pr-9 py-2.5 border-2 rounded-2xl font-mono font-bold transition-all duration-200 focus:outline-none ${
+                      !isTypingFirstPass
+                        ? 'border-slate-200 bg-slate-50 text-slate-800 focus:border-[#176e57]'
+                        : passCheck.isValid
+                        ? 'border-emerald-500 bg-emerald-50/70 text-emerald-950 ring-2 ring-emerald-500/20'
+                        : 'border-rose-500 bg-rose-50/70 text-rose-950 ring-2 ring-rose-500/20'
+                    }`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowFirstLoginPass(!showFirstLoginPass)}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 transition"
+                  >
+                    {showFirstLoginPass ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">
+                    Confirm New Password:
+                  </label>
+                  {isConfirmTyping && (
+                    <span className={`text-[10px] font-bold ${
+                      isConfirmMatching ? 'text-emerald-700' : 'text-rose-600'
+                    }`}>
+                      {isConfirmMatching ? 'Passwords Match' : 'Does Not Match'}
+                    </span>
+                  )}
+                </div>
+
+                <div className="relative">
+                  <Lock className={`w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none transition-colors ${
+                    !isConfirmTyping
+                      ? 'text-slate-400'
+                      : isConfirmMatching
+                      ? 'text-emerald-600'
+                      : 'text-rose-500'
+                  }`} />
+                  <input
+                    type={showFirstLoginPass ? 'text' : 'password'}
+                    required
+                    value={firstLoginConfirm}
+                    onChange={(e) => {
+                      setFirstLoginConfirm(e.target.value);
+                      setFirstLoginError('');
+                    }}
+                    placeholder="Re-enter password"
+                    className={`w-full pl-8 pr-3 py-2.5 border-2 rounded-2xl font-mono font-bold transition-all duration-200 focus:outline-none ${
+                      !isConfirmTyping
+                        ? 'border-slate-200 bg-slate-50 text-slate-800 focus:border-[#176e57]'
+                        : isConfirmMatching
+                        ? 'border-emerald-500 bg-emerald-50/70 text-emerald-950 ring-2 ring-emerald-500/20'
+                        : 'border-rose-500 bg-rose-50/70 text-rose-950 ring-2 ring-rose-500/20'
+                    }`}
+                  />
+                </div>
+              </div>
+
+              {/* Live Security Checklist (Red X vs Green Check) */}
+              <div className="p-3.5 bg-slate-50 border border-slate-200/80 rounded-2xl space-y-2.5">
+                <div className="flex items-center justify-between border-b border-slate-200/70 pb-1.5">
+                  <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">
+                    Security Checklist
+                  </span>
+                  <span className={`text-[10px] font-mono font-bold ${
+                    passCheck.hasMinLength ? 'text-emerald-700' : isTypingFirstPass ? 'text-rose-600' : 'text-slate-400'
+                  }`}>
+                    {firstLoginPass.length}/6+ chars
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-1.5 text-[11px]">
+                  {[
+                    { met: passCheck.hasLowercase, label: '1 Lowercase (a-z)' },
+                    { met: passCheck.hasUppercase, label: '1 Uppercase (A-Z)' },
+                    { met: passCheck.hasNumber, label: '1 Number (0-9)' },
+                    { met: passCheck.hasSpecial, label: '1 Symbol (@#$!)' }
+                  ].map((rule, idx) => (
+                    <div
+                      key={idx}
+                      className={`flex items-center gap-1.5 font-semibold transition-colors ${
+                        rule.met
+                          ? 'text-emerald-800'
+                          : isTypingFirstPass
+                          ? 'text-rose-700'
+                          : 'text-slate-500'
+                      }`}
+                    >
+                      <div className={`w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 transition-colors ${
+                        rule.met
+                          ? 'bg-emerald-500 text-white'
+                          : isTypingFirstPass
+                          ? 'bg-rose-500 text-white'
+                          : 'border border-slate-300 bg-white text-transparent'
+                      }`}>
+                        {rule.met ? (
+                          <Check className="w-2.5 h-2.5 stroke-[3]" />
+                        ) : isTypingFirstPass ? (
+                          <X className="w-2.5 h-2.5 stroke-[3]" />
+                        ) : null}
+                      </div>
+                      <span>{rule.label}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="pt-1.5 border-t border-slate-200/70 space-y-1.5 text-[11px]">
+                  {[
+                    {
+                      met: passCheck.noPersonalInfo,
+                      failAlert: passCheck.includesPersonalInfo,
+                      passText: "Doesn't include personal name or ID",
+                      failText: 'Includes your name or Staff ID'
+                    },
+                    {
+                      met: passCheck.noPredictablePatterns,
+                      failAlert: passCheck.isPredictable,
+                      passText: 'No predictable sequences (1234, sjc)',
+                      failText: 'Uses predictable spelling or numbers'
+                    }
+                  ].map((item, idx) => (
+                    <div
+                      key={idx}
+                      className={`flex items-center gap-2 font-semibold transition-colors ${
+                        item.met
+                          ? 'text-emerald-800'
+                          : isTypingFirstPass
+                          ? 'text-rose-700'
+                          : 'text-slate-500'
+                      }`}
+                    >
+                      <div className={`w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 transition-colors ${
+                        item.met
+                          ? 'bg-emerald-500 text-white'
+                          : isTypingFirstPass
+                          ? 'bg-rose-500 text-white'
+                          : 'border border-slate-300 bg-white text-transparent'
+                      }`}>
+                        {item.met ? (
+                          <Check className="w-2.5 h-2.5 stroke-[3]" />
+                        ) : isTypingFirstPass ? (
+                          <X className="w-2.5 h-2.5 stroke-[3]" />
+                        ) : null}
+                      </div>
+                      <span>{item.failAlert ? item.failText : item.passText}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={isSavingFirstLogin || !isAppOtpValid || !passCheck.isValid || !isConfirmMatching}
+                className="w-full py-3 bg-[#176e57] hover:bg-[#135c49] active:scale-95 text-white font-bold rounded-xl shadow-xs transition disabled:opacity-45 disabled:pointer-events-none"
+              >
+                {isSavingFirstLogin ? 'Saving to Database...' : 'Save Password & Unlock Account'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
 
       {user && !isPublicPage && <Navbar user={user} isDesktopView={isWide} />}
     </div>

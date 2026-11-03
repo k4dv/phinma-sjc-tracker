@@ -115,3 +115,117 @@ export function sanitizeUser(userObj) {
   delete safe.admin_passcode;
   return safe;
 }
+
+const PREDICTABLE_PATTERNS = [
+  '1234',
+  '12345',
+  '123456',
+  '654321',
+  'password',
+  'pass123',
+  'qwerty',
+  'asdfgh',
+  'admin',
+  'phinma',
+  'sjc123',
+  'stjude',
+  'welcome',
+  'letmein',
+  'abc123',
+  'abcdef',
+  '0000',
+  '1111',
+  '2222',
+  '9999'
+];
+
+/**
+ * Validates modern password requirements & checks against easy/personal patterns:
+ * - At least 1 lowercase letter (a-z)
+ * - At least 1 uppercase letter (A-Z)
+ * - At least 1 number (0-9)
+ * - At least 1 special character (!@#$%^&* etc.)
+ * - Does not include personal info (Name or Staff ID)
+ * - Does not use predictable/easy patterns (1234, password, qwerty, etc.)
+ */
+export function validatePasswordStrength(password = '', userContext = {}) {
+  const str = String(password);
+  const lowerStr = str.toLowerCase();
+
+  const hasLowercase = /[a-z]/.test(str);
+  const hasUppercase = /[A-Z]/.test(str);
+  const hasNumber = /[0-9]/.test(str);
+  const hasSpecial = /[^A-Za-z0-9\s]/.test(str);
+  const hasMinLength = str.length >= 6;
+  const hasAllCharTypes = hasLowercase && hasUppercase && hasNumber && hasSpecial;
+
+  // Check if password contains user's personal info (name tokens or ID)
+  let includesPersonalInfo = false;
+  if (str.length > 0) {
+    const cleanId = String(userContext?.id || '').trim().toLowerCase();
+    if (cleanId && cleanId.length >= 2 && lowerStr.includes(cleanId)) {
+      includesPersonalInfo = true;
+    }
+
+    const rawName = String(userContext?.name || '').trim().toLowerCase();
+    const ignoredTitles = ['kuya', 'ate', 'staff', 'member', 'admin', 'supervisor', 'facilities'];
+    const nameTokens = rawName
+      .split(/\s+/)
+      .filter((t) => t.length >= 3 && !ignoredTitles.includes(t));
+
+    if (nameTokens.some((token) => lowerStr.includes(token))) {
+      includesPersonalInfo = true;
+    }
+
+    const emailPrefix = String(userContext?.email || '').split('@')[0]?.toLowerCase();
+    if (emailPrefix && emailPrefix.length >= 4 && lowerStr.includes(emailPrefix)) {
+      includesPersonalInfo = true;
+    }
+  }
+
+  // Check for predictable dictionary patterns, keyboard walks, or 4+ repeated chars
+  let isPredictable = false;
+  if (str.length > 0) {
+    const hasCommonPattern = PREDICTABLE_PATTERNS.some((pat) => lowerStr.includes(pat));
+    const hasRepeatedChars = /(.)\1{3,}/.test(lowerStr);
+    isPredictable = hasCommonPattern || hasRepeatedChars;
+  }
+
+  const noPersonalInfo = str.length > 0 && !includesPersonalInfo;
+  const noPredictablePatterns = str.length > 0 && !isPredictable;
+
+  const isValid =
+    hasMinLength &&
+    hasAllCharTypes &&
+    noPersonalInfo &&
+    noPredictablePatterns;
+
+  // Determine primary warning message when user is typing
+  let warningMessage = '';
+  if (str.length > 0 && !isValid) {
+    if (includesPersonalInfo) {
+      warningMessage = 'Too easy: Password includes your name or Staff ID.';
+    } else if (isPredictable) {
+      warningMessage = 'Too easy: Avoid predictable sequences (e.g., 1234, password, sjc).';
+    } else if (!hasAllCharTypes) {
+      warningMessage = 'Conditions not met: Must mix uppercase, lowercase, number, and symbol.';
+    } else if (!hasMinLength) {
+      warningMessage = 'Too short: Password must be at least 6 characters long.';
+    }
+  }
+
+  return {
+    isValid,
+    hasLowercase,
+    hasUppercase,
+    hasNumber,
+    hasSpecial,
+    hasMinLength,
+    hasAllCharTypes,
+    noPersonalInfo,
+    noPredictablePatterns,
+    includesPersonalInfo,
+    isPredictable,
+    warningMessage
+  };
+}

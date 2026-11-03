@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { supabase } from '../data/supabaseClient';
 import { api } from '../services/api';
-import { sanitizeUser } from '../utils/security';
+import { sanitizeUser, hashPassword } from '../utils/security';
 import XLSX from 'xlsx-js-style';
 import { 
   Megaphone, 
@@ -23,7 +23,10 @@ import {
   Building2, 
   User, 
   Search, 
-  UserCheck 
+  UserCheck,
+  Lock,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 
 const CAMPUS_BUILDINGS = [
@@ -77,6 +80,8 @@ export default function Admin({
   const [newUserId, setNewUserId] = useState('');
   const [newUserName, setNewUserName] = useState('');
   const [newUserEmail, setNewUserEmail] = useState('');
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [showNewUserPassword, setShowNewUserPassword] = useState(false);
   const [newUserRole, setNewUserRole] = useState('staff');
   const [newUserAccessLevel, setNewUserAccessLevel] = useState(1);
   const [isCreatingAccount, setIsCreatingAccount] = useState(false);
@@ -225,10 +230,11 @@ export default function Admin({
         .order('id', { ascending: true });
 
       if (!error && data && data.length > 0) {
-        setStaffRoster(data.map(sanitizeUser));
+        const validUsers = data.filter((u) => !String(u.id).startsWith('supply_img_'));
+        setStaffRoster(validUsers.map(sanitizeUser));
 
         const avatarMap = {};
-        data.forEach((item) => {
+        validUsers.forEach((item) => {
           if (item.avatar) avatarMap[item.id] = item.avatar;
         });
         setStaffAvatars(avatarMap);
@@ -341,11 +347,7 @@ export default function Admin({
   // SECURE ACCOUNT CREATION WITH EMAIL DISPATCH
   const handleCreateAccount = async (e) => {
     e.preventDefault();
-    const cleanId = newUserId.trim();
-    const cleanName = newUserName.trim();
-    const cleanEmail = newUserEmail.trim().toLowerCase();
-
-    if (!cleanId || !cleanName || !cleanEmail) {
+    if (!newUserId.trim() || !newUserName.trim() || !newUserEmail.trim()) {
       showError('Please provide Staff ID, Full Name, and Email.');
       return;
     }
@@ -359,56 +361,27 @@ export default function Admin({
 
     setIsCreatingAccount(true);
 
-    // Generate secure 6-character temporary password
-    const tempPassword = `SJC-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
-
     try {
-      // 1. Send the email with the temporary password via EmailJS
-      const currentTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      
-      const emailResponse = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          service_id: EMAILJS_SERVICE_ID,
-          template_id: EMAILJS_TEMPLATE_ID,
-          user_id: EMAILJS_PUBLIC_KEY,
-          template_params: {
-            email: cleanEmail,
-            to_email: cleanEmail,
-            staff_name: cleanName,
-            passcode: tempPassword,
-            time: currentTime,
-            displayed_email: cleanEmail
-          }
-        })
-      });
-
-      if (!emailResponse.ok) {
-        throw new Error('Failed to dispatch credentials email. Please verify EmailJS service.');
-      }
-
-      // 2. Save user directly into Supabase profiles
       const { data, error } = await supabase.from('profiles').insert([{
-        id: cleanId,
-        name: cleanName,
-        email: cleanEmail,
+        id: newUserId.trim(),
+        name: newUserName.trim(),
+        email: newUserEmail.trim(),
         role: newUserRole,
         access_level: Number(newUserAccessLevel),
-        password: tempPassword,
         is_first_login: true
       }]).select('id, name, email, role, access_level, avatar');
 
       if (error) throw error;
       if (data && data[0]) setStaffRoster((prev) => [...prev, sanitizeUser(data[0])]);
-
-      showToast(`Account created! Credentials emailed to ${cleanEmail}`);
+      showToast(`Account created for ${newUserName.trim()}!`);
       setNewUserId('');
       setNewUserName('');
       setNewUserEmail('');
+      setNewUserPassword('');
+      setShowNewUserPassword(false);
       setShowCreateModal(false);
     } catch (err) {
-      showError(err.message || 'Error creating account.');
+      showError(err.message || 'Error creating account in database.');
     } finally {
       setIsCreatingAccount(false);
     }
@@ -1914,7 +1887,7 @@ export default function Admin({
                   required
                   value={newUserId}
                   onChange={(e) => setNewUserId(e.target.value)}
-                  placeholder="ID (e.g. 006 or 2024-0012)"
+                  placeholder="ID"
                   className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-slate-50 focus:outline-none focus:border-[#176e57] font-semibold"
                 />
               </div>
@@ -1945,6 +1918,32 @@ export default function Admin({
                   placeholder="name.surname.sjc@phinmaed.com"
                   className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-slate-50 focus:outline-none focus:border-[#176e57] font-semibold"
                 />
+              </div>
+
+              {/* Create Initial Password Field */}
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
+                  Create Password:
+                </label>
+                <div className="relative">
+                  <Lock className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type={showNewUserPassword ? 'text' : 'password'}
+                    required
+                    value={newUserPassword}
+                    onChange={(e) => setNewUserPassword(e.target.value)}
+                    placeholder="Create initial password for user"
+                    className="w-full pl-8 pr-9 py-2 border border-slate-200 rounded-xl bg-slate-50 focus:outline-none focus:border-[#176e57] font-semibold"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowNewUserPassword(!showNewUserPassword)}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 transition"
+                    title={showNewUserPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showNewUserPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-2">
@@ -1982,12 +1981,12 @@ export default function Admin({
               </div>
 
               <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl space-y-0.5">
-                <span className="text-[10px] font-bold text-slate-600 block">Automated Temporary Password:</span>
+                <span className="text-[10px] font-bold text-slate-600 block">Default Credentials:</span>
                 <p className="text-[10px] text-slate-500">
-                  A temporary password will be generated and automatically emailed to their registered address.
+                  Standard institutional default password will be assigned automatically.
                 </p>
-                <p className="text-[9px] text-slate-400">
-                  User will be forced to change this password on their first login.
+                <p className="text-[9px] text-slate-500">
+                  Upon first sign-in, the user will be prompted to create a permanent password with 1 lowercase, 1 uppercase, 1 number, and 1 special character.
                 </p>
               </div>
 
