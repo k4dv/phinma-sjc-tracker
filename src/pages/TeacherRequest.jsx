@@ -51,6 +51,9 @@ const CAMPUS_DATA = {
   }
 };
 
+// Authorized Faculty Passcodes
+const AUTHORIZED_PINS = ['4758', '102919', '022529'];
+
 export default function TeacherRequest() {
   const navigate = useNavigate();
 
@@ -73,9 +76,6 @@ export default function TeacherRequest() {
   // Google reCAPTCHA Verification Gate
   const [showCaptchaModal, setShowCaptchaModal] = useState(false);
 
-  // Exact Faculty Authorization PIN
-  const AUTHORIZED_PIN = '4758';
-
   // Automatically update the default room whenever building or floor changes
   useEffect(() => {
     const availableRooms = CAMPUS_DATA[selectedBuilding].getRooms(selectedFloor);
@@ -88,7 +88,7 @@ export default function TeacherRequest() {
     e.preventDefault();
     const cleanPin = facultyPin.trim();
 
-    if (cleanPin === AUTHORIZED_PIN) {
+    if (AUTHORIZED_PINS.includes(cleanPin)) {
       setIsVerified(true);
       setAuthError('');
       setFacultyPin('');
@@ -143,14 +143,12 @@ export default function TeacherRequest() {
       console.warn('Local storage sync warning:', localErr);
     }
 
-    // 2. Safe Push to Supabase Database (Guaranteed delivery)
+    // 2. Safe Push to Supabase Database
     try {
-      // First attempt: try inserting with building column if available
       let { error: dbError } = await supabase
         .from('teacher_requests')
         .insert([{ ...newRequest, building: selectedBuilding }]);
 
-      // Fallback: If table does not have a 'building' column, retry with standard schema
       if (dbError) {
         const retryResult = await supabase
           .from('teacher_requests')
@@ -158,7 +156,7 @@ export default function TeacherRequest() {
         dbError = retryResult.error;
       }
 
-      // 3. Post to Live Custodial Shift Log so supervisor & staff dashboard sees it immediately
+      // 3. Post to Live Custodial Shift Log
       try {
         const newLog = {
           id: `log-${Date.now()}`,
@@ -264,22 +262,21 @@ export default function TeacherRequest() {
                 <input
                   type="password"
                   inputMode="numeric"
-                  maxLength={4}
                   required
                   autoComplete="off"
                   value={facultyPin}
                   onChange={(e) => setFacultyPin(e.target.value)}
-                  placeholder="••••"
+                  placeholder="••••••••"
                   className="w-full p-2.5 border border-slate-200 rounded-xl text-slate-800 font-mono font-bold tracking-widest text-center focus:outline-none focus:border-[#176e57] text-base bg-slate-50"
                 />
               </div>
 
               <button
                 type="submit"
-                disabled={facultyPin.length < 4}
+                disabled={!facultyPin.trim()}
                 className="w-full py-3 bg-[#176e57] hover:bg-[#135c49] disabled:bg-slate-300 disabled:cursor-not-allowed active:scale-[0.98] text-white font-bold rounded-xl text-xs shadow-sm transition"
               >
-                Verify & Open Call Screen
+                Verify
               </button>
             </form>
           </div>
@@ -327,7 +324,7 @@ export default function TeacherRequest() {
             </button>
           </div>
         ) : (
-          /* Step 2: Form (Clean layout matching reference image) */
+          /* Step 2: Form */
           <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100 space-y-4 animate-pop">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2">
@@ -367,7 +364,7 @@ export default function TeacherRequest() {
                 />
               </div>
 
-              {/* Campus Building Selector (Pill tabs without dots) */}
+              {/* Campus Building Selector */}
               <div>
                 <label className="text-[11px] font-bold text-slate-700 block mb-1.5">
                   Campus Building:
